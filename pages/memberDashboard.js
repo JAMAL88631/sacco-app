@@ -1,654 +1,701 @@
-import { useEffect, useState } from 'react'
-import { useRouter } from 'next/router'
-import { supabase } from '../lib/supabaseClient'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/router';
+import { supabase } from '../lib/supabaseClient';
+import NotificationBell from '../components/NotificationBell';
+import AdminNotificationPanel from '../components/AdminNotificationPanel';
+import { useToast } from '../components/ToastProvider';
+import { clearRoleSession, getHomeRouteForRole, normalizeRole } from '../lib/auth';
+import {
+  fetchMembersForNotifications,
+  fetchNotificationsForMember,
+  markAllNotificationsRead,
+  markNotificationRead,
+  sendNotification,
+} from '../lib/notifications';
+
+function formatKes(value) {
+  return `KES ${Number(value || 0).toLocaleString()}`;
+}
+
+function TabButton({ tab, activeTab, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(tab)}
+      className={`inline-flex h-9 min-w-[110px] items-center justify-center rounded-md border px-3 text-xs font-semibold capitalize tracking-[0.04em] transition sm:min-w-[120px] ${
+        activeTab === tab
+          ? 'border-sky-200 bg-sky-300 text-slate-900 shadow-[0_10px_22px_rgba(125,211,252,0.18)]'
+          : 'border-white/10 bg-white/5 text-yellow-200 hover:bg-white/12'
+      }`}
+      style={
+        activeTab === tab
+          ? {
+              backgroundColor: '#7dd3fc',
+              color: '#0f172a',
+              borderColor: '#bae6fd',
+              borderRadius: '10px',
+              minHeight: '36px',
+              paddingLeft: '12px',
+              paddingRight: '12px',
+            }
+          : {
+              color: '#facc15',
+              borderRadius: '10px',
+              minHeight: '36px',
+              paddingLeft: '12px',
+              paddingRight: '12px',
+            }
+      }
+    >
+      {tab}
+    </button>
+  );
+}
+
+function SectionCard({ title, children, className = '', bodyClassName = '' }) {
+  return (
+    <section className={`rounded-[1.75rem] border border-white/10 bg-white/95 p-6 text-center shadow-[0_20px_60px_rgba(0,0,0,0.22)] ${className}`}>
+      <h2 className="text-2xl font-bold text-green-600 sm:text-3xl" style={{ color: '#16a34a' }}>{title}</h2>
+      <div className={`mt-6 ${bodyClassName}`}>{children}</div>
+    </section>
+  );
+}
+
+function SummaryCard({ title, value, subtitle }) {
+  return (
+    <div className="rounded-[1.75rem] border border-white/10 bg-[linear-gradient(180deg,#102045_0%,#0b1733_100%)] p-5 text-center shadow-[0_16px_40px_rgba(15,23,42,0.28)]">
+      <h3 className="text-xl font-bold text-green-600 sm:text-2xl" style={{ color: '#16a34a' }}>{title}</h3>
+      <p className="mt-5 text-2xl font-bold text-green-700 sm:text-3xl" style={{ color: '#15803d' }}>{value}</p>
+      <p className="mt-3 text-lg text-yellow-700" style={{ color: '#ca8a04' }}>{subtitle}</p>
+    </div>
+  );
+}
+
+function StyledInput({ value, onChange, placeholder, type = 'text' }) {
+  return (
+    <input
+      type={type}
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      className="mx-auto mt-3 block w-56 max-w-full rounded-full border border-sky-100 bg-white px-4 py-2 text-center text-sm text-slate-900 shadow-[0_10px_24px_rgba(15,23,42,0.08)] outline-none transition placeholder:text-slate-400 focus:border-sky-300 focus:ring-2 focus:ring-sky-100 sm:w-64"
+    />
+  );
+}
 
 export default function MemberDashboard() {
-  const [member, setMember] = useState(null)
-  const [loans, setLoans] = useState([])
-  const [transactions, setTransactions] = useState([])
-  const [depositAmount, setDepositAmount] = useState('')
-  const [withdrawAmount, setWithdrawAmount] = useState('')
-  const [loanAmount, setLoanAmount] = useState('')
-  const [loanPurpose, setLoanPurpose] = useState('')
-  const [activeTab, setActiveTab] = useState('overview')
-  const [message, setMessage] = useState('')
-  const [messageType, setMessageType] = useState('')
-  const [loading, setLoading] = useState(true)
-  const router = useRouter()
+  const router = useRouter();
+  const { showToast } = useToast();
+  const hasInitializedAdminTab = useRef(false);
+  const [member, setMember] = useState(null);
+  const [memberId, setMemberId] = useState('');
+  const [loans, setLoans] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+  const [activeTab, setActiveTab] = useState('overview');
+  const [loading, setLoading] = useState(true);
+  const [depositAmount, setDepositAmount] = useState('');
+  const [loanAmount, setLoanAmount] = useState('');
+  const [loanPurpose, setLoanPurpose] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [isNotificationOpen, setIsNotificationOpen] = useState(false);
+  const [adminMembers, setAdminMembers] = useState([]);
+  const [notificationAudience, setNotificationAudience] = useState('all');
+  const [notificationRecipientId, setNotificationRecipientId] = useState('');
+  const [notificationTitle, setNotificationTitle] = useState('');
+  const [notificationBody, setNotificationBody] = useState('');
 
-  useEffect(() => {
-    loadData()
-  }, [])
+  const loadDashboard = useCallback(async () => {
+    setLoading(true);
 
-  const loadData = async () => {
     try {
-      console.log('=== Starting loadData ===')
-      
-      const { data: { user }, error: userError } = await supabase.auth.getUser()
-      console.log('Auth check:', { user: user?.id, error: userError })
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
 
-      if (userError) {
-        console.error('❌ Auth error:', userError)
-        setMessage('🔴 Auth error: ' + userError.message)
-        setMessageType('error')
-        setLoading(false)
-        return
+      if (authError || !user) {
+        router.push('/auth');
+        return;
       }
 
-      if (!user) {
-        console.log('No user, redirecting to auth')
-        router.push('/auth')
-        return
-      }
+      setMemberId(user.id);
 
-      console.log('✅ User authenticated:', user.id)
-      setMessage('🔄 Loading your data...')
-
-      // Try to load existing member
-      console.log('📋 Attempting to load member record...')
       const { data: memberData, error: memberError } = await supabase
         .from('members')
         .select('*')
         .eq('id', user.id)
-        .single()
+        .single();
 
-      console.log('Member query result:', { 
-        success: !memberError, 
-        error: memberError?.message,
-        code: memberError?.code,
-        data: memberData 
-      })
+      let resolvedMember = memberData;
 
-      let finalMemberData = memberData
-
-      // If member doesn't exist, create it
-      if (!memberData) {
-        console.log('⚠️ Member not found, creating new member record...')
-        const newMemberData = {
+      if (memberError && memberError.code === 'PGRST116') {
+        const newMember = {
           id: user.id,
           email: user.email || '',
           name: user.user_metadata?.full_name || 'Member',
-          savings: 0
-        }
-        console.log('Creating member with data:', newMemberData)
-        
-        const { data: newMember, error: createError } = await supabase
+          savings: 0,
+          role: 'member',
+          is_admin: false,
+        };
+
+        const { data: insertedMember, error: insertError } = await supabase
           .from('members')
-          .insert([newMemberData])
+          .insert([newMember])
           .select()
-          .single()
+          .single();
 
-        console.log('Member creation result:', { 
-          success: !createError, 
-          error: createError?.message,
-          code: createError?.code,
-          data: newMember 
-        })
-
-        if (createError) {
-          console.error('❌ Create member error:', createError)
-          const errorMsg = `Database issue: ${createError.message}`
-          setMessage('🔴 Error: ' + errorMsg)
-          setMessageType('error')
-          setLoading(false)
-          return
-        }
-
-        finalMemberData = newMember
+        if (insertError) throw insertError;
+        resolvedMember = insertedMember;
+      } else if (memberError) {
+        throw memberError;
       }
 
-      if (finalMemberData) {
-        console.log('✅ Member data set:', finalMemberData)
-        setMember(finalMemberData)
-        setMessage('')
-      } else {
-        throw new Error('No member data available')
-      }
-
-      // Load loans
-      console.log('📊 Loading loans...')
       const { data: loanData, error: loanError } = await supabase
         .from('loans')
         .select('*')
         .eq('member_id', user.id)
-        .order('created_at', { ascending: false })
+        .order('created_at', { ascending: false });
 
-      if (loanError) {
-        console.warn('⚠️ Loan load warning:', loanError)
-      } else {
-        console.log('✅ Loans loaded:', loanData?.length || 0)
-        setLoans(loanData || [])
-      }
+      if (loanError) throw loanError;
 
-      // Load transactions
-      console.log('💰 Loading transactions...')
       const { data: transactionData, error: transactionError } = await supabase
         .from('transactions')
         .select('*')
         .eq('member_id', user.id)
-        .order('created_at', { ascending: false })
+        .order('created_at', { ascending: false });
 
-      if (transactionError) {
-        console.warn('⚠️ Transaction load warning:', transactionError)
-      } else {
-        console.log('✅ Transactions loaded:', transactionData?.length || 0)
-        setTransactions(transactionData || [])
+      if (transactionError) throw transactionError;
+
+      const resolvedRole = normalizeRole(resolvedMember);
+      const isAdminRoute = router.pathname === '/admin';
+      const isMemberRoute = router.pathname === '/dashboard' || router.pathname === '/memberDashboard';
+
+      if (isAdminRoute && resolvedRole !== 'admin') {
+        router.replace(getHomeRouteForRole(resolvedRole));
+        return;
       }
 
-      console.log('=== Data loading complete ===')
-    } catch (err) {
-      console.error('❌ Unexpected error:', err)
-      setMessage('🔴 Error: ' + err.message)
-      setMessageType('error')
+      if (isMemberRoute && resolvedRole === 'admin') {
+        router.replace('/admin');
+        return;
+      }
+
+      setMember({
+        name: resolvedMember?.name || user.user_metadata?.full_name || 'Member',
+        email: resolvedMember?.email || user.email || '',
+        savings: Number(resolvedMember?.savings || 0),
+        isAdmin: resolvedRole === 'admin',
+        role: resolvedRole,
+      });
+      setLoans(
+        (loanData || []).map((loan) => ({
+          ...loan,
+          amount: Number(loan.amount || 0),
+          repaid: Number(loan.repaid || 0),
+        }))
+      );
+      setTransactions(
+        (transactionData || []).map((tx) => ({
+          ...tx,
+          amount: Number(tx.amount || 0),
+        }))
+      );
+    } catch (error) {
+      showToast({
+        type: 'error',
+        title: 'Dashboard error',
+        description: error.message || 'Could not load dashboard.',
+      });
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  }, [router, showToast]);
 
-  const deposit = async () => {
-    if (!depositAmount || parseFloat(depositAmount) <= 0) {
-      setMessage('Enter a valid deposit amount')
-      setMessageType('error')
-      return
+  useEffect(() => {
+    void loadDashboard();
+  }, [loadDashboard]);
+
+  const loadNotifications = useCallback(
+    async (currentMemberId) => {
+      if (!currentMemberId) {
+        return;
+      }
+
+      try {
+        const { items, unreadCount } = await fetchNotificationsForMember(currentMemberId, 40);
+        setNotifications(items);
+        setUnreadNotifications(unreadCount);
+      } catch (error) {
+        showToast({
+          type: 'error',
+          title: 'Notification error',
+          description: error.message || 'Could not load notifications.',
+        });
+      }
+    },
+    [showToast]
+  );
+
+  useEffect(() => {
+    if (!memberId) {
+      return undefined;
     }
 
+    void loadNotifications(memberId);
+
+    const intervalId = window.setInterval(() => {
+      void loadNotifications(memberId);
+    }, 15000);
+
+    return () => window.clearInterval(intervalId);
+  }, [loadNotifications, memberId]);
+
+  useEffect(() => {
+    if (!member?.isAdmin) {
+      return;
+    }
+
+    void fetchMembersForNotifications()
+      .then((data) => setAdminMembers(data))
+      .catch((error) => {
+        showToast({
+          type: 'error',
+          title: 'Member lookup failed',
+          description: error.message || 'Could not load members.',
+        });
+      });
+  }, [member?.isAdmin, showToast]);
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    await clearRoleSession();
+    router.push('/auth');
+  };
+
+  const handleToggleNotifications = async () => {
+    const nextOpen = !isNotificationOpen;
+    setIsNotificationOpen(nextOpen);
+
+    if (nextOpen) {
+      await loadNotifications(memberId);
+    }
+  };
+
+  const handleMarkNotificationRead = async (notificationId) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      const amount = parseFloat(depositAmount)
-      const newSavings = (member.savings || 0) + amount
+      await markNotificationRead(notificationId, memberId);
+      await loadNotifications(memberId);
+    } catch (error) {
+      showToast({
+        type: 'error',
+        title: 'Notification update failed',
+        description: error.message || 'Could not mark notification as read.',
+      });
+    }
+  };
 
-      await supabase
+  const handleMarkAllNotificationsRead = async () => {
+    try {
+      await markAllNotificationsRead(notifications, memberId);
+      await loadNotifications(memberId);
+    } catch (error) {
+      showToast({
+        type: 'error',
+        title: 'Notification update failed',
+        description: error.message || 'Could not mark notifications as read.',
+      });
+    }
+  };
+
+  const handleDeposit = async () => {
+    const amount = Number(depositAmount);
+    if (!amount || amount <= 0) {
+      showToast({
+        type: 'error',
+        title: 'Invalid amount',
+        description: 'Enter a valid deposit amount.',
+      });
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const nextSavings = Number(member?.savings || 0) + amount;
+
+      const { error: memberUpdateError } = await supabase
         .from('members')
-        .update({ savings: newSavings })
-        .eq('id', member.id)
+        .update({ savings: nextSavings })
+        .eq('id', memberId);
 
-      await supabase.from('transactions').insert([
+      if (memberUpdateError) throw memberUpdateError;
+
+      const { error: transactionError } = await supabase.from('transactions').insert([
         {
-          member_id: user.id,
+          member_id: memberId,
           type: 'deposit',
-          amount: amount,
-          description: 'Savings deposit'
-        }
-      ])
+          amount,
+          description: 'Savings deposit',
+        },
+      ]);
 
-      setMember({ ...member, savings: newSavings })
-      setMessage(`Successfully deposited KES ${amount.toLocaleString()}`)
-      setMessageType('success')
-      setDepositAmount('')
-      loadData()
-    } catch (err) {
-      setMessage('Deposit failed: ' + err.message)
-      setMessageType('error')
+      if (transactionError) throw transactionError;
+
+      setDepositAmount('');
+      setActiveTab('transactions');
+      showToast({
+        type: 'success',
+        title: 'Deposit successful',
+        description: `${formatKes(amount)} has been added to your savings.`,
+      });
+      await loadDashboard();
+    } catch (error) {
+      showToast({
+        type: 'error',
+        title: 'Deposit failed',
+        description: error.message || 'Deposit failed.',
+      });
+    } finally {
+      setBusy(false);
     }
-  }
+  };
 
-  const withdraw = async () => {
-    if (!withdrawAmount || parseFloat(withdrawAmount) <= 0) {
-      setMessage('Enter a valid withdrawal amount')
-      setMessageType('error')
-      return
+  const handleLoanRequest = async () => {
+    const amount = Number(loanAmount);
+    if (!amount || amount <= 0) {
+      showToast({
+        type: 'error',
+        title: 'Invalid amount',
+        description: 'Enter a valid loan amount.',
+      });
+      return;
     }
 
-    const amount = parseFloat(withdrawAmount)
-    if (amount > member.savings) {
-      setMessage('Insufficient savings balance')
-      setMessageType('error')
-      return
+    if (!loanPurpose.trim()) {
+      showToast({
+        type: 'error',
+        title: 'Missing purpose',
+        description: 'Enter a loan purpose.',
+      });
+      return;
     }
 
+    setBusy(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      const newSavings = member.savings - amount
-
-      await supabase
-        .from('members')
-        .update({ savings: newSavings })
-        .eq('id', member.id)
-
-      await supabase.from('transactions').insert([
-        {
-          member_id: user.id,
-          type: 'withdrawal',
-          amount: amount,
-          description: 'Savings withdrawal'
-        }
-      ])
-
-      setMember({ ...member, savings: newSavings })
-      setMessage(`Successfully withdrawn KES ${amount.toLocaleString()}`)
-      setMessageType('success')
-      setWithdrawAmount('')
-      loadData()
-    } catch (err) {
-      setMessage('Withdrawal failed: ' + err.message)
-      setMessageType('error')
-    }
-  }
-
-  const applyLoan = async () => {
-    if (!loanAmount || parseFloat(loanAmount) <= 0) {
-      setMessage('Enter a valid loan amount')
-      setMessageType('error')
-      return
-    }
-
-    if (!loanPurpose) {
-      setMessage('Please provide loan purpose')
-      setMessageType('error')
-      return
-    }
-
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
       const { error } = await supabase.from('loans').insert([
         {
-          member_id: user.id,
-          amount: parseFloat(loanAmount),
-          purpose: loanPurpose,
+          member_id: memberId,
+          amount,
+          purpose: loanPurpose.trim(),
           status: 'pending',
-          repaid: 0
-        }
-      ])
+          repaid: 0,
+        },
+      ]);
 
-      if (error) throw error
+      if (error) throw error;
 
-      setMessage('Loan application submitted! Awaiting approval.')
-      setMessageType('success')
-      setLoanAmount('')
-      setLoanPurpose('')
-      loadData()
-    } catch (err) {
-      setMessage('Loan application failed: ' + err.message)
-      setMessageType('error')
+      setLoanAmount('');
+      setLoanPurpose('');
+      setActiveTab('loans');
+      showToast({
+        type: 'success',
+        title: 'Loan application sent',
+        description: `Your request for ${formatKes(amount)} has been submitted.`,
+      });
+      await loadDashboard();
+    } catch (error) {
+      showToast({
+        type: 'error',
+        title: 'Loan request failed',
+        description: error.message || 'Loan request failed.',
+      });
+    } finally {
+      setBusy(false);
     }
-  }
+  };
 
-  const repayLoan = async (loanId) => {
-    const repayAmount = prompt('Enter repayment amount:')
-    if (!repayAmount || parseFloat(repayAmount) <= 0) return
+  const handleSendNotification = async () => {
+    if (!notificationTitle.trim()) {
+      showToast({
+        type: 'error',
+        title: 'Missing title',
+        description: 'Enter a notification title.',
+      });
+      return;
+    }
+
+    if (!notificationBody.trim()) {
+      showToast({
+        type: 'error',
+        title: 'Missing message',
+        description: 'Enter a notification message.',
+      });
+      return;
+    }
+
+    if (notificationAudience === 'user' && !notificationRecipientId) {
+      showToast({
+        type: 'error',
+        title: 'Member required',
+        description: 'Choose a member to notify.',
+      });
+      return;
+    }
+
+    setBusy(true);
 
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      const loan = loans.find(l => l.id === loanId)
-      const amount = parseFloat(repayAmount)
+      await sendNotification({
+        createdBy: memberId,
+        recipientId: notificationAudience === 'user' ? notificationRecipientId : null,
+        title: notificationTitle,
+        body: notificationBody,
+      });
 
-      if (amount + loan.repaid > loan.amount) {
-        setMessage('Repayment exceeds loan amount')
-        setMessageType('error')
-        return
-      }
-
-      const newRepaid = loan.repaid + amount
-      const status = newRepaid >= loan.amount ? 'completed' : 'active'
-
-      await supabase
-        .from('loans')
-        .update({ repaid: newRepaid, status })
-        .eq('id', loanId)
-
-      await supabase.from('transactions').insert([
-        {
-          member_id: user.id,
-          type: 'loan_repayment',
-          amount: amount,
-          description: `Loan repayment`
-        }
-      ])
-
-      setMessage(`Loan repayment of KES ${amount.toLocaleString()} recorded`)
-      setMessageType('success')
-      loadData()
-    } catch (err) {
-      setMessage('Repayment failed: ' + err.message)
-      setMessageType('error')
+      setNotificationTitle('');
+      setNotificationBody('');
+      setNotificationRecipientId('');
+      setNotificationAudience('all');
+      showToast({
+        type: 'info',
+        title: 'Notification sent',
+        description: 'Your alert has been delivered successfully.',
+      });
+      await loadNotifications(memberId);
+    } catch (error) {
+      showToast({
+        type: 'error',
+        title: 'Send failed',
+        description: error.message || 'Could not send notification.',
+      });
+    } finally {
+      setBusy(false);
     }
-  }
+  };
 
-  const logout = async () => {
-    await supabase.auth.signOut()
-    router.push('/auth')
-  }
+  const totals = useMemo(() => {
+    const totalSavings = Number(member?.savings || 0);
+    const activeLoans = loans.filter((loan) => loan.status !== 'completed' && loan.status !== 'rejected');
+    const totalLoanBalance = activeLoans.reduce((sum, loan) => sum + Math.max(0, loan.amount - loan.repaid), 0);
+    const totalRepaid = loans.reduce((sum, loan) => sum + loan.repaid, 0);
+
+    return {
+      totalSavings,
+      availableFunds: totalSavings,
+      activeLoansCount: activeLoans.length,
+      totalLoanBalance,
+      totalRepaid,
+    };
+  }, [loans, member]);
+
+  useEffect(() => {
+    if (!member) {
+      return;
+    }
+
+    if (!hasInitializedAdminTab.current && router.pathname === '/admin' && activeTab === 'overview') {
+      hasInitializedAdminTab.current = true;
+      setActiveTab('admin alerts');
+    }
+  }, [activeTab, member, router.pathname]);
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 flex items-center justify-center p-4">
-        <div className="bg-white rounded-lg p-8 text-center">
-          <div className="text-lg font-semibold text-gray-800 mb-4">Loading...</div>
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto"></div>
-        </div>
-      </div>
-    )
-  }
-
-  if (message && messageType === 'error') {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 flex items-center justify-center p-4">
-        <div className="bg-white rounded-lg shadow-lg p-8 max-w-md">
-          <h2 className="text-2xl font-bold text-red-600 mb-4">Error</h2>
-          <p className="text-gray-700 mb-4">{message}</p>
-          <button
-            onClick={() => {
-              setMessage('')
-              setMessageType('')
-              loadData()
-            }}
-            className="w-full bg-blue-500 text-white py-2 rounded-lg hover:bg-blue-600 mb-2"
-          >
-            Try Again
-          </button>
-          <button
-            onClick={async () => {
-              await supabase.auth.signOut()
-              router.push('/auth')
-            }}
-            className="w-full bg-red-500 text-white py-2 rounded-lg hover:bg-red-600"
-          >
-            Logout
-          </button>
-        </div>
-      </div>
-    )
+    return <div className="min-h-screen bg-[radial-gradient(circle_at_top,#1e3a8a_0%,#102045_42%,#081226_100%)] p-6 text-lg text-white">Loading dashboard...</div>;
   }
 
   if (!member) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 flex items-center justify-center p-4">
-        <div className="bg-white rounded-lg shadow-lg p-8 max-w-md">
-          <h2 className="text-2xl font-bold text-gray-800 mb-4">No Member Data</h2>
-          <p className="text-gray-700 mb-4">Your member profile could not be loaded.</p>
-          <button
-            onClick={() => {
-              setLoading(true)
-              loadData()
-            }}
-            className="w-full bg-blue-500 text-white py-2 rounded-lg hover:bg-blue-600 mb-2"
-          >
-            Reload
-          </button>
-          <button
-            onClick={async () => {
-              await supabase.auth.signOut()
-              router.push('/auth')
-            }}
-            className="w-full bg-red-500 text-white py-2 rounded-lg hover:bg-red-600"
-          >
-            Logout
-          </button>
-        </div>
+      <div className="min-h-screen bg-[radial-gradient(circle_at_top,#1e3a8a_0%,#102045_42%,#081226_100%)] p-6 text-white">
+        <p>Could not load dashboard.</p>
       </div>
-    )
+    );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 p-4">
-      <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
-          <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-3xl font-bold text-gray-800">
-                Welcome, {member.name || member.email}
-              </h1>
-              <p className="text-gray-600">{member.email}</p>
-            </div>
-            <button
-              onClick={logout}
-              className="bg-red-500 text-white px-6 py-2 rounded-lg hover:bg-red-600 transition"
-            >
-              Logout
-            </button>
-          </div>
-        </div>
-
-        {/* Message */}
-        {message && (
-          <div
-            className={`p-4 rounded-lg mb-6 ${
-              messageType === 'success'
-                ? 'bg-green-100 text-green-700'
-                : 'bg-red-100 text-red-700'
-            }`}
-          >
-            {message}
-          </div>
-        )}
-
-        {/* Tabs */}
-        <div className="flex gap-2 mb-6 bg-white rounded-xl shadow-lg p-2">
-          {['overview', 'savings', 'loans', 'transactions'].map(tab => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`flex-1 py-2 px-4 rounded-lg font-semibold transition capitalize ${
-                activeTab === tab
-                  ? 'bg-gradient-to-r from-blue-500 to-purple-500 text-white'
-                  : 'bg-gray-100 text-gray-700'
-              }`}
-            >
-              {tab}
-            </button>
-          ))}
-        </div>
-
-        {/* Overview Tab */}
-        {activeTab === 'overview' && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {/* Savings Card */}
-            <div className="bg-white rounded-xl shadow-lg p-6">
-              <h3 className="text-gray-600 text-sm font-medium">Total Savings</h3>
-              <p className="text-4xl font-bold text-blue-600 mt-2">
-                KES {(member.savings || 0).toLocaleString()}
-              </p>
-              <p className="text-gray-500 text-sm mt-4">Available funds</p>
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,#1e3a8a_0%,#102045_42%,#081226_100%)] px-4 py-6 text-white sm:px-6 lg:px-8">
+      <div className="mx-auto w-full max-w-5xl">
+        <header className="rounded-[1.9rem] border border-white/10 bg-white/95 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.28)]">
+          <div className="flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
+            <div className="flex-1 text-center md:text-left">
+              <h1 className="text-4xl font-black tracking-tight text-green-600 sm:text-5xl" style={{ color: '#16a34a' }}>Welcome, {member.name.toLowerCase()}</h1>
+              <p className="mt-4 text-xl text-yellow-700 sm:text-2xl" style={{ color: '#ca8a04' }}>{member.email}</p>
             </div>
 
-            {/* Active Loans Card */}
-            <div className="bg-white rounded-xl shadow-lg p-6">
-              <h3 className="text-gray-600 text-sm font-medium">Active Loans</h3>
-              <p className="text-4xl font-bold text-purple-600 mt-2">
-                {loans.filter(l => l.status !== 'completed').length}
-              </p>
-              <p className="text-gray-500 text-sm mt-4">
-                Total: KES {loans.filter(l => l.status !== 'completed').reduce((sum, l) => sum + (l.amount || 0), 0).toLocaleString()}
-              </p>
-            </div>
-
-            {/* Loan Repayments Card */}
-            <div className="bg-white rounded-xl shadow-lg p-6">
-              <h3 className="text-gray-600 text-sm font-medium">Total Repaid</h3>
-              <p className="text-4xl font-bold text-green-600 mt-2">
-                KES {loans.reduce((sum, l) => sum + (l.repaid || 0), 0).toLocaleString()}
-              </p>
-              <p className="text-gray-500 text-sm mt-4">Loan payments made</p>
+            <div className="flex items-start gap-3 self-start">
+              <NotificationBell
+                notifications={notifications}
+                unreadCount={unreadNotifications}
+                isOpen={isNotificationOpen}
+                onToggle={handleToggleNotifications}
+                onMarkRead={handleMarkNotificationRead}
+                onMarkAllRead={handleMarkAllNotificationsRead}
+              />
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="rounded-2xl border border-sky-200 bg-sky-300 px-4 py-2 text-base text-slate-900 sm:text-lg"
+                style={{ backgroundColor: '#7dd3fc', color: '#0f172a', borderColor: '#bae6fd' }}
+              >
+                Logout
+              </button>
             </div>
           </div>
-        )}
+        </header>
 
-        {/* Savings Tab */}
-        {activeTab === 'savings' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Deposit */}
-            <div className="bg-white rounded-xl shadow-lg p-6">
-              <h3 className="text-xl font-bold text-gray-800 mb-4">Deposit Savings</h3>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Amount
-                  </label>
-                  <input
+        <div className="mt-6 space-y-6">
+          <aside className="rounded-[1.9rem] border border-white/10 bg-white/10 p-4 shadow-[0_18px_50px_rgba(0,0,0,0.18)] backdrop-blur">
+            <div className="mb-4 text-center">
+              <p className="text-sm font-semibold uppercase tracking-[0.25em]" style={{ color: '#facc15' }}>Menu</p>
+            </div>
+            <nav className="flex flex-wrap items-center justify-center gap-2">
+              {['overview', 'savings', 'loans', 'transactions', ...(member.isAdmin ? ['admin alerts'] : [])].map((tab) => (
+                <TabButton key={tab} tab={tab} activeTab={activeTab} onClick={setActiveTab} />
+              ))}
+            </nav>
+          </aside>
+
+          <div>
+            {activeTab === 'overview' && (
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <SummaryCard title="Total Savings" value={formatKes(totals.totalSavings)} subtitle="Available funds" />
+                <SummaryCard title="Active Loans" value={String(totals.activeLoansCount)} subtitle={`Total: ${formatKes(totals.totalLoanBalance)}`} />
+                <SummaryCard title="Total Repaid" value={formatKes(totals.totalRepaid)} subtitle="Loan payments made" />
+              </div>
+            )}
+
+            {activeTab === 'savings' && (
+              <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+                <SectionCard title="Deposit Savings">
+                  <label className="block text-lg font-medium">Amount</label>
+                  <StyledInput
                     type="number"
                     value={depositAmount}
-                    onChange={(e) => setDepositAmount(e.target.value)}
+                    onChange={(event) => setDepositAmount(event.target.value)}
                     placeholder="Enter amount"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
-                </div>
-                <button
-                  onClick={deposit}
-                  className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white py-2 rounded-lg font-semibold hover:opacity-90 transition"
-                >
-                  Deposit
-                </button>
-              </div>
-            </div>
+                  <div className="mt-4 flex justify-center">
+                    <button
+                      type="button"
+                      onClick={handleDeposit}
+                      disabled={busy}
+                      className="rounded-2xl border border-sky-200 bg-sky-300 px-4 py-2 text-lg text-slate-900 disabled:opacity-60"
+                      style={{ backgroundColor: '#7dd3fc', color: '#0f172a', borderColor: '#bae6fd' }}
+                    >
+                      Deposit
+                    </button>
+                  </div>
+                </SectionCard>
 
-            {/* Withdraw */}
-            <div className="bg-white rounded-xl shadow-lg p-6">
-              <h3 className="text-xl font-bold text-gray-800 mb-4">Withdraw Savings</h3>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Amount
-                  </label>
-                  <input
-                    type="number"
-                    value={withdrawAmount}
-                    onChange={(e) => setWithdrawAmount(e.target.value)}
-                    placeholder="Enter amount"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                  />
-                </div>
-                <button
-                  onClick={withdraw}
-                  className="w-full bg-gradient-to-r from-purple-500 to-purple-600 text-white py-2 rounded-lg font-semibold hover:opacity-90 transition"
-                >
-                  Withdraw
-                </button>
+                <SectionCard title="Savings Summary">
+                  <p className="text-3xl text-green-700" style={{ color: '#15803d' }}>{formatKes(totals.totalSavings)}</p>
+                  <p className="mt-4 text-lg text-yellow-700" style={{ color: '#ca8a04' }}>Current savings balance</p>
+                </SectionCard>
               </div>
-            </div>
-          </div>
-        )}
+            )}
 
-        {/* Loans Tab */}
-        {activeTab === 'loans' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Apply for Loan */}
-            <div className="bg-white rounded-xl shadow-lg p-6">
-              <h3 className="text-xl font-bold text-gray-800 mb-4">Apply for Loan</h3>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Loan Amount
-                  </label>
-                  <input
-                    type="number"
-                    value={loanAmount}
-                    onChange={(e) => setLoanAmount(e.target.value)}
-                    placeholder="Enter amount"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Purpose
-                  </label>
-                  <select
-                    value={loanPurpose}
-                    onChange={(e) => setLoanPurpose(e.target.value)}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                  >
-                    <option value="">Select purpose</option>
-                    <option value="emergency">Emergency</option>
-                    <option value="business">Business</option>
-                    <option value="education">Education</option>
-                    <option value="medical">Medical</option>
-                    <option value="housing">Housing</option>
-                    <option value="other">Other</option>
-                  </select>
-                </div>
-                <button
-                  onClick={applyLoan}
-                  className="w-full bg-gradient-to-r from-green-500 to-green-600 text-white py-2 rounded-lg font-semibold hover:opacity-90 transition"
-                >
-                  Apply for Loan
-                </button>
-              </div>
-            </div>
-
-            {/* Active Loans */}
-            <div className="bg-white rounded-xl shadow-lg p-6">
-              <h3 className="text-xl font-bold text-gray-800 mb-4">Your Loans</h3>
-              <div className="space-y-3 max-h-96 overflow-y-auto">
-                {loans.length === 0 ? (
-                  <p className="text-gray-500 text-center py-4">No loans yet</p>
-                ) : (
-                  loans.map(loan => (
-                    <div key={loan.id} className="border border-gray-200 rounded-lg p-3">
-                      <div className="flex justify-between items-start mb-2">
-                        <div>
-                          <p className="font-semibold text-gray-800">
-                            KES {loan.amount.toLocaleString()}
-                          </p>
-                          <p className="text-xs text-gray-500 capitalize">{loan.purpose || 'Loan'}</p>
-                        </div>
-                        <span className={`px-2 py-1 rounded text-xs font-semibold ${
-                          loan.status === 'completed'
-                            ? 'bg-green-100 text-green-700'
-                            : loan.status === 'approved'
-                            ? 'bg-blue-100 text-blue-700'
-                            : 'bg-yellow-100 text-yellow-700'
-                        }`}>
-                          {loan.status}
-                        </span>
-                      </div>
-                      <div className="space-y-1 text-xs text-gray-600">
-                        <p>Repaid: KES {(loan.repaid || 0).toLocaleString()} / {loan.amount.toLocaleString()}</p>
-                        <div className="w-full bg-gray-200 rounded-full h-2">
-                          <div
-                            className="bg-green-500 h-2 rounded-full"
-                            style={{ width: `${(loan.repaid / loan.amount) * 100}%` }}
-                          ></div>
-                        </div>
-                      </div>
-                      {loan.status !== 'completed' && (
-                        <button
-                          onClick={() => repayLoan(loan.id)}
-                          className="mt-2 w-full bg-blue-500 text-white py-1 rounded text-xs font-semibold hover:bg-blue-600 transition"
-                        >
-                          Make Payment
-                        </button>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Transactions Tab */}
-        {activeTab === 'transactions' && (
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <h3 className="text-xl font-bold text-gray-800 mb-4">Transaction History</h3>
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {transactions.length === 0 ? (
-                <p className="text-gray-500 text-center py-4">No transactions yet</p>
-              ) : (
-                transactions.map((tx, idx) => (
-                  <div key={idx} className="flex justify-between items-center border-b border-gray-200 py-3">
+            {activeTab === 'loans' && (
+              <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
+                <SectionCard title="Apply for Loan">
+                  <div className="space-y-4">
                     <div>
-                      <p className="font-semibold text-gray-800 capitalize">{tx.type}</p>
-                      <p className="text-xs text-gray-500">{tx.description}</p>
+                      <label className="block text-lg font-medium">Loan Amount</label>
+                      <StyledInput
+                        type="number"
+                        value={loanAmount}
+                        onChange={(event) => setLoanAmount(event.target.value)}
+                        placeholder="Enter amount"
+                      />
                     </div>
-                    <div className="text-right">
-                      <p className={`font-semibold ${
-                        tx.type === 'deposit' || tx.type === 'loan_repayment'
-                          ? 'text-green-600'
-                          : 'text-red-600'
-                      }`}>
-                        {tx.type === 'deposit' || tx.type === 'loan_repayment' ? '+' : '-'} KES {tx.amount.toLocaleString()}
-                      </p>
-                      <p className="text-xs text-gray-500">
-                        {new Date(tx.created_at).toLocaleDateString()}
-                      </p>
+
+                    <div>
+                      <label className="block text-lg font-medium">Purpose</label>
+                      <StyledInput
+                        value={loanPurpose}
+                        onChange={(event) => setLoanPurpose(event.target.value)}
+                        placeholder="Loan purpose"
+                      />
                     </div>
                   </div>
-                ))
-              )}
-            </div>
+
+                  <div className="mt-4 flex justify-center">
+                    <button
+                      type="button"
+                      onClick={handleLoanRequest}
+                      disabled={busy}
+                      className="rounded-2xl border border-sky-200 bg-sky-300 px-4 py-2 text-lg text-slate-900 disabled:opacity-60"
+                      style={{ backgroundColor: '#7dd3fc', color: '#0f172a', borderColor: '#bae6fd' }}
+                    >
+                      Request Loan
+                    </button>
+                  </div>
+                </SectionCard>
+
+                <SectionCard title="Your Loans">
+                  <div className="space-y-4">
+                    {loans.length === 0 ? (
+                      <p className="text-xl">No loans found.</p>
+                    ) : (
+                      loans.map((loan) => (
+                        <div key={loan.id} className="rounded border border-slate-200 p-4 text-center">
+                          <p className="text-xl font-semibold">{loan.purpose || 'Loan'}</p>
+                          <p className="mt-2 text-base">Status: {loan.status}</p>
+                          <p className="mt-2 text-base">Amount: {formatKes(loan.amount)}</p>
+                          <p className="mt-2 text-base">Repaid: {formatKes(loan.repaid)}</p>
+                          <p className="mt-2 text-base">Balance: {formatKes(Math.max(0, loan.amount - loan.repaid))}</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </SectionCard>
+              </div>
+            )}
+
+            {activeTab === 'transactions' && (
+              <SectionCard
+                title="Transactions"
+                className="bg-[linear-gradient(180deg,#102045_0%,#0b1733_100%)]"
+                bodyClassName="text-white"
+              >
+                <div className="space-y-4">
+                  {transactions.length === 0 ? (
+                    <p className="text-xl">No transactions yet.</p>
+                  ) : (
+                    transactions.map((tx) => (
+                      <div
+                        key={tx.id}
+                        className="rounded-2xl border border-white/10 bg-[linear-gradient(180deg,#13284f_0%,#0f1f3f_100%)] p-4 text-center shadow-[0_10px_25px_rgba(2,8,23,0.22)]"
+                      >
+                        <p className="text-xl font-semibold" style={{ color: '#16a34a' }}>{tx.description || tx.type}</p>
+                        <p className="mt-2 text-lg font-semibold" style={{ color: '#15803d' }}>{formatKes(tx.amount)}</p>
+                        <p className="mt-2 text-sm font-medium" style={{ color: '#ca8a04' }}>
+                          {tx.created_at ? new Date(tx.created_at).toLocaleDateString() : ''}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </SectionCard>
+            )}
+
+            {activeTab === 'admin alerts' && member.isAdmin ? (
+              <AdminNotificationPanel
+                audience={notificationAudience}
+                onAudienceChange={setNotificationAudience}
+                selectedRecipientId={notificationRecipientId}
+                onRecipientChange={setNotificationRecipientId}
+                members={adminMembers.filter((adminMember) => adminMember.id !== memberId)}
+                title={notificationTitle}
+                onTitleChange={setNotificationTitle}
+                body={notificationBody}
+                onBodyChange={setNotificationBody}
+                onSend={handleSendNotification}
+                busy={busy}
+              />
+            ) : null}
           </div>
-        )}
+        </div>
       </div>
     </div>
-  )
+  );
 }

@@ -1,22 +1,31 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabaseClient'
+import { useToast } from '../components/ToastProvider'
+import { getCurrentMemberProfile, getHomeRouteForRole, normalizeRole, syncRoleSession } from '../lib/auth'
 
 export default function AuthPage() {
+  const { showToast } = useToast()
   const [isLogin, setIsLogin] = useState(true)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [fullName, setFullName] = useState('')
   const [phoneNumber, setPhoneNumber] = useState('')
-  const [message, setMessage] = useState('')
-  const [messageType, setMessageType] = useState('')
   const [loading, setLoading] = useState(false)
   const router = useRouter()
 
   useEffect(() => {
     const checkUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) router.push('/memberDashboard')
+      try {
+        const { user, member } = await getCurrentMemberProfile()
+        if (!user) return
+
+        const role = normalizeRole(member)
+        const syncedRole = await syncRoleSession(role)
+        router.push(getHomeRouteForRole(syncedRole))
+      } catch (error) {
+        console.error('Session check error:', error)
+      }
     }
     checkUser()
   }, [router])
@@ -24,18 +33,15 @@ export default function AuthPage() {
   const handleSignUp = async (e) => {
     e.preventDefault()
     setLoading(true)
-    setMessage('')
 
     if (!email || !password || !fullName || !phoneNumber) {
-      setMessage('All fields are required')
-      setMessageType('error')
+      showToast({ type: 'error', title: 'Missing fields', description: 'All fields are required.' })
       setLoading(false)
       return
     }
 
     if (password.length < 6) {
-      setMessage('Password must be at least 6 characters')
-      setMessageType('error')
+      showToast({ type: 'error', title: 'Weak password', description: 'Password must be at least 6 characters.' })
       setLoading(false)
       return
     }
@@ -53,8 +59,7 @@ export default function AuthPage() {
       })
 
       if (error) {
-        setMessage(error.message)
-        setMessageType('error')
+        showToast({ type: 'error', title: 'Sign up failed', description: error.message })
         setLoading(false)
         return
       }
@@ -65,19 +70,19 @@ export default function AuthPage() {
             id: data.user.id,
             email: data.user.email || email,
             name: fullName,
-            savings: 0
+            savings: 0,
+            role: 'member',
+            is_admin: false
           }
         ])
 
         if (insertError) {
           console.error('Member creation error:', insertError)
-          setMessage('Account created! Please login with your credentials.')
-          setMessageType('success')
+          showToast({ type: 'info', title: 'Account created', description: 'Please log in to continue.' })
         } else {
-          setMessage('Account created successfully! You can now login.')
-          setMessageType('success')
+          showToast({ type: 'success', title: 'Account created', description: 'You can now log in to your dashboard.' })
         }
-        
+
         setEmail('')
         setPassword('')
         setFullName('')
@@ -85,8 +90,7 @@ export default function AuthPage() {
         setTimeout(() => setIsLogin(true), 2000)
       }
     } catch (err) {
-      setMessage('An error occurred: ' + err.message)
-      setMessageType('error')
+      showToast({ type: 'error', title: 'Sign up failed', description: err.message })
     } finally {
       setLoading(false)
     }
@@ -95,11 +99,9 @@ export default function AuthPage() {
   const handleLogin = async (e) => {
     e.preventDefault()
     setLoading(true)
-    setMessage('')
 
     if (!email || !password) {
-      setMessage('Email and password are required')
-      setMessageType('error')
+      showToast({ type: 'error', title: 'Missing credentials', description: 'Email and password are required.' })
       setLoading(false)
       return
     }
@@ -111,191 +113,196 @@ export default function AuthPage() {
       })
 
       if (error) {
-        setMessage(error.message)
-        setMessageType('error')
+        showToast({ type: 'error', title: 'Login failed', description: error.message })
         setLoading(false)
         return
       }
 
-      setMessage('Login successful!')
-      setMessageType('success')
-      setTimeout(() => router.push('/memberDashboard'), 1000)
+      const { member } = await getCurrentMemberProfile()
+      const role = normalizeRole(member)
+      const syncedRole = await syncRoleSession(role)
+
+      showToast({ type: 'success', title: 'Login successful', description: 'Redirecting to your dashboard.' })
+      setTimeout(() => router.push(getHomeRouteForRole(syncedRole)), 800)
     } catch (err) {
-      setMessage('An error occurred: ' + err.message)
-      setMessageType('error')
+      showToast({ type: 'error', title: 'Login failed', description: err.message })
       setLoading(false)
     }
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8">
-        {/* Header */}
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-purple-600 mb-2">
-            SACCO
-          </h1>
-          <p className="text-gray-600 text-sm">Savings and Credit Cooperative</p>
-        </div>
-
-        {/* Tabs */}
-        <div className="flex gap-4 mb-8">
-          <button
-            onClick={() => {
-              setIsLogin(true)
-              setMessage('')
-            }}
-            className={`flex-1 py-2 px-4 rounded-lg font-semibold transition ${
-              isLogin
-                ? 'bg-gradient-to-r from-blue-500 to-purple-500 text-white'
-                : 'bg-gray-200 text-gray-600'
-            }`}
-          >
-            Login
-          </button>
-          <button
-            onClick={() => {
-              setIsLogin(false)
-              setMessage('')
-            }}
-            className={`flex-1 py-2 px-4 rounded-lg font-semibold transition ${
-              !isLogin
-                ? 'bg-gradient-to-r from-blue-500 to-purple-500 text-white'
-                : 'bg-gray-200 text-gray-600'
-            }`}
-          >
-            Sign Up
-          </button>
-        </div>
-
-        {/* Message */}
-        {message && (
-          <div
-            className={`p-4 rounded-lg mb-4 text-sm font-medium ${
-              messageType === 'success'
-                ? 'bg-green-100 text-green-700'
-                : 'bg-red-100 text-red-700'
-            }`}
-          >
-            {message}
-          </div>
-        )}
-
-        {/* Login Form */}
-        {isLogin ? (
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Email Address
-              </label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                disabled={loading}
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Password
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                disabled={loading}
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-gradient-to-r from-blue-500 to-purple-500 text-white py-2 rounded-lg font-semibold hover:opacity-90 transition disabled:opacity-50"
-            >
-              {loading ? 'Logging in...' : 'Login'}
-            </button>
-          </form>
-        ) : (
-          /* Sign Up Form */
-          <form onSubmit={handleSignUp} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Full Name
-              </label>
-              <input
-                type="text"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                placeholder="John Doe"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                disabled={loading}
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Email Address
-              </label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                disabled={loading}
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Phone Number
-              </label>
-              <input
-                type="tel"
-                value={phoneNumber}
-                onChange={(e) => setPhoneNumber(e.target.value)}
-                placeholder="+1 (555) 000-0000"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                disabled={loading}
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Password
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                disabled={loading}
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                At least 6 characters
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,#1e3a8a_0%,#102045_42%,#081226_100%)] px-4 py-8 text-white sm:px-6">
+      <div className="mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-5xl items-center justify-center">
+        <div className="grid w-full gap-8 lg:grid-cols-[1fr_420px] lg:items-center">
+          <section className="hidden lg:block">
+            <div className="max-w-xl">
+              <p className="text-sm font-semibold uppercase tracking-[0.35em] text-yellow-300" style={{ color: '#fde047' }}>Sacco Space</p>
+              <h1 className="mt-5 text-5xl font-black leading-tight text-green-400" style={{ color: '#22c55e' }}>
+                Save confidently.
+                <br />
+                Borrow simply.
+              </h1>
+              <p className="mt-6 text-lg leading-8 text-yellow-200" style={{ color: '#facc15' }}>
+                A cleaner member experience for savings, loans, and day-to-day account activity.
               </p>
+              <div className="mt-10 grid gap-4 sm:grid-cols-3">
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur">
+                  <p className="text-sm text-yellow-200" style={{ color: '#facc15' }}>Access</p>
+                  <p className="mt-2 text-2xl font-bold text-green-400" style={{ color: '#22c55e' }}>24/7</p>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur">
+                  <p className="text-sm text-yellow-200" style={{ color: '#facc15' }}>Member Tools</p>
+                  <p className="mt-2 text-2xl font-bold text-green-400" style={{ color: '#22c55e' }}>4</p>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur">
+                  <p className="text-sm text-yellow-200" style={{ color: '#facc15' }}>Secure</p>
+                  <p className="mt-2 text-2xl font-bold text-green-400" style={{ color: '#22c55e' }}>Yes</p>
+                </div>
+              </div>
             </div>
+          </section>
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-gradient-to-r from-blue-500 to-purple-500 text-white py-2 rounded-lg font-semibold hover:opacity-90 transition disabled:opacity-50"
-            >
-              {loading ? 'Creating Account...' : 'Sign Up'}
-            </button>
-          </form>
-        )}
+          <section className="w-full">
+            <div className="rounded-[2rem] border border-white/10 bg-white/95 p-6 shadow-[0_30px_90px_rgba(0,0,0,0.35)] sm:p-8">
+              <div className="text-center">
+                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-950 text-2xl text-blue-100 shadow-lg">
+                  S
+                </div>
+                <h2 className="mt-5 text-3xl font-black text-green-600" style={{ color: '#16a34a' }}>{isLogin ? 'Welcome back' : 'Create account'}</h2>
+                <p className="mt-2 text-sm text-yellow-600" style={{ color: '#ca8a04' }}>
+                  {isLogin ? 'Sign in to continue to your member dashboard.' : 'Open your member account in a few quick steps.'}
+                </p>
+              </div>
 
-        {/* Footer */}
-        <p className="text-center text-gray-600 text-xs mt-6">
-          By continuing, you agree to our Terms of Service and Privacy Policy
-        </p>
+              <div className="mx-auto mt-8 flex max-w-[16rem] rounded-full bg-slate-100 p-1.5">
+                <button
+                  onClick={() => {
+                    setIsLogin(true)
+                  }}
+                  className={`flex-1 rounded-full px-4 py-2 text-sm font-bold transition ${
+                    isLogin ? 'bg-sky-300 text-slate-900 shadow-md' : 'text-yellow-700'
+                  }`}
+                  style={isLogin ? { backgroundColor: '#7dd3fc', color: '#0f172a' } : { color: '#ca8a04' }}
+                >
+                  Login
+                </button>
+                <button
+                  onClick={() => {
+                    setIsLogin(false)
+                  }}
+                  className={`flex-1 rounded-full px-4 py-2 text-sm font-bold transition ${
+                    !isLogin ? 'bg-sky-300 text-slate-900 shadow-md' : 'text-yellow-700'
+                  }`}
+                  style={!isLogin ? { backgroundColor: '#7dd3fc', color: '#0f172a' } : { color: '#ca8a04' }}
+                >
+                  Sign Up
+                </button>
+              </div>
+
+              {isLogin ? (
+                <form onSubmit={handleLogin} className="mx-auto mt-6 max-w-xs space-y-4">
+                  <div className="mx-auto w-64 max-w-full">
+                    <label className="block text-center text-sm font-bold leading-none" style={{ color: '#fde047', marginBottom: '2px' }}>Email Address</label>
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@example.com"
+                      className="mx-auto block w-64 max-w-full rounded-full border border-sky-100 bg-white px-4 py-2.5 text-center text-sm text-slate-900 shadow-[0_10px_24px_rgba(15,23,42,0.08)] outline-none transition placeholder:text-slate-400 focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                      style={{ marginTop: 0 }}
+                      disabled={loading}
+                    />
+                  </div>
+
+                  <div className="mx-auto w-64 max-w-full">
+                    <label className="block text-center text-sm font-bold leading-none" style={{ color: '#fde047', marginBottom: '2px' }}>Password</label>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="Enter password"
+                      className="mx-auto block w-64 max-w-full rounded-full border border-sky-100 bg-white px-4 py-2.5 text-center text-sm text-slate-900 shadow-[0_10px_24px_rgba(15,23,42,0.08)] outline-none transition placeholder:text-slate-400 focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                      style={{ marginTop: 0 }}
+                      disabled={loading}
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="mx-auto block w-64 max-w-full rounded-full bg-sky-300 px-4 py-2.5 text-sm font-bold text-slate-900 transition hover:bg-sky-200 disabled:opacity-60"
+                    style={{ backgroundColor: '#7dd3fc', color: '#0f172a' }}
+                  >
+                    {loading ? 'Logging in...' : 'Login'}
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={handleSignUp} className="mx-auto mt-6 max-w-xs space-y-4">
+                  <div className="mx-auto w-64 max-w-full">
+                    <label className="block text-center text-sm font-bold leading-none text-slate-800" style={{ marginBottom: '2px' }}>Full Name</label>
+                    <input
+                      type="text"
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
+                      placeholder="John Doe"
+                      className="mx-auto block w-64 max-w-full rounded-full border border-sky-100 bg-white px-4 py-2.5 text-center text-sm text-slate-900 shadow-[0_10px_24px_rgba(15,23,42,0.08)] outline-none transition placeholder:text-slate-400 focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                      style={{ marginTop: 0 }}
+                      disabled={loading}
+                    />
+                  </div>
+
+                  <div className="mx-auto w-64 max-w-full">
+                    <label className="block text-center text-sm font-bold leading-none" style={{ color: '#fde047', marginBottom: '2px' }}>Email Address</label>
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@example.com"
+                      className="mx-auto block w-64 max-w-full rounded-full border border-sky-100 bg-white px-4 py-2.5 text-center text-sm text-slate-900 shadow-[0_10px_24px_rgba(15,23,42,0.08)] outline-none transition placeholder:text-slate-400 focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                      style={{ marginTop: 0 }}
+                      disabled={loading}
+                    />
+                  </div>
+
+                  <div className="mx-auto w-64 max-w-full">
+                    <label className="block text-center text-sm font-bold leading-none text-slate-800" style={{ marginBottom: '2px' }}>Phone Number</label>
+                    <input
+                      type="tel"
+                      value={phoneNumber}
+                      onChange={(e) => setPhoneNumber(e.target.value)}
+                      placeholder="+254710000000"
+                      className="mx-auto block w-64 max-w-full rounded-full border border-sky-100 bg-white px-4 py-2.5 text-center text-sm text-slate-900 shadow-[0_10px_24px_rgba(15,23,42,0.08)] outline-none transition placeholder:text-slate-400 focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                      style={{ marginTop: 0 }}
+                      disabled={loading}
+                    />
+                  </div>
+
+                  <div className="mx-auto w-64 max-w-full">
+                    <label className="block text-center text-sm font-bold leading-none" style={{ color: '#fde047', marginBottom: '2px' }}>Password</label>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="Minimum 6 characters"
+                      className="mx-auto block w-64 max-w-full rounded-full border border-sky-100 bg-white px-4 py-2.5 text-center text-sm text-slate-900 shadow-[0_10px_24px_rgba(15,23,42,0.08)] outline-none transition placeholder:text-slate-400 focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                      style={{ marginTop: 0 }}
+                      disabled={loading}
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="mx-auto block w-64 max-w-full rounded-full bg-sky-300 px-4 py-2.5 text-sm font-bold text-slate-900 transition hover:bg-sky-200 disabled:opacity-60"
+                    style={{ backgroundColor: '#7dd3fc', color: '#0f172a' }}
+                  >
+                    {loading ? 'Creating account...' : 'Sign Up'}
+                  </button>
+                </form>
+              )}
+            </div>
+          </section>
+        </div>
       </div>
     </div>
   )
