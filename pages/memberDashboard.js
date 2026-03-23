@@ -13,8 +13,22 @@ import {
   sendNotification,
 } from '../lib/notifications';
 
+const LOAN_INTEREST_RATE = 0.1;
+const REJECTED_LOAN_VISIBLE_HOURS = 12;
+
 function formatKes(value) {
   return `KES ${Number(value || 0).toLocaleString()}`;
+}
+
+function getLoanTotalDue(loan) {
+  const principal = Number(loan?.amount || 0);
+  return Math.round(principal * (1 + LOAN_INTEREST_RATE));
+}
+
+function isMissingRejectedAtColumnError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  const details = String(error?.details || '').toLowerCase();
+  return message.includes('rejected_at') || details.includes('rejected_at');
 }
 
 function TabButton({ tab, activeTab, onClick }) {
@@ -96,6 +110,11 @@ export default function MemberDashboard() {
   const [depositAmount, setDepositAmount] = useState('');
   const [loanAmount, setLoanAmount] = useState('');
   const [loanPurpose, setLoanPurpose] = useState('');
+  const [repaymentAmount, setRepaymentAmount] = useState('');
+  const [selectedLoanId, setSelectedLoanId] = useState('');
+  const [profileFullName, setProfileFullName] = useState('');
+  const [profilePhoneNumber, setProfilePhoneNumber] = useState('');
+  const [profileSaving, setProfileSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
@@ -105,6 +124,8 @@ export default function MemberDashboard() {
   const [notificationRecipientId, setNotificationRecipientId] = useState('');
   const [notificationTitle, setNotificationTitle] = useState('');
   const [notificationBody, setNotificationBody] = useState('');
+  const [adminLoanRequests, setAdminLoanRequests] = useState([]);
+  const [processingLoanId, setProcessingLoanId] = useState('');
 
   const loadDashboard = useCallback(async () => {
     setLoading(true);
@@ -170,30 +191,28 @@ export default function MemberDashboard() {
 
       const resolvedRole = normalizeRole(resolvedMember);
       const isAdminRoute = router.pathname === '/admin';
-      const isMemberRoute = router.pathname === '/dashboard' || router.pathname === '/memberDashboard';
 
       if (isAdminRoute && resolvedRole !== 'admin') {
         router.replace(getHomeRouteForRole(resolvedRole));
         return;
       }
 
-      if (isMemberRoute && resolvedRole === 'admin') {
-        router.replace('/admin');
-        return;
-      }
-
       setMember({
         name: resolvedMember?.name || user.user_metadata?.full_name || 'Member',
         email: resolvedMember?.email || user.email || '',
+        phoneNumber: resolvedMember?.phone_number || user.user_metadata?.phone_number || '',
         savings: Number(resolvedMember?.savings || 0),
         isAdmin: resolvedRole === 'admin',
         role: resolvedRole,
       });
+      setProfileFullName((resolvedMember?.name || user.user_metadata?.full_name || '').trim());
+      setProfilePhoneNumber((resolvedMember?.phone_number || user.user_metadata?.phone_number || '').trim());
       setLoans(
         (loanData || []).map((loan) => ({
           ...loan,
           amount: Number(loan.amount || 0),
           repaid: Number(loan.repaid || 0),
+          rejected_at: loan.rejected_at || null,
         }))
       );
       setTransactions(
@@ -202,6 +221,44 @@ export default function MemberDashboard() {
           amount: Number(tx.amount || 0),
         }))
       );
+
+      if (resolvedRole === 'admin') {
+        const { data: pendingLoanData, error: pendingLoanError } = await supabase
+          .from('loans')
+          .select('id, member_id, amount, purpose, status, repaid, created_at')
+          .eq('status', 'pending')
+          .order('created_at', { ascending: false });
+
+        if (pendingLoanError) throw pendingLoanError;
+
+        const pendingMemberIds = Array.from(
+          new Set((pendingLoanData || []).map((loan) => loan.member_id).filter(Boolean))
+        );
+
+        let pendingMembersById = new Map();
+        if (pendingMemberIds.length > 0) {
+          const { data: pendingMembers, error: pendingMembersError } = await supabase
+            .from('members')
+            .select('id,name,email')
+            .in('id', pendingMemberIds);
+
+          if (pendingMembersError) throw pendingMembersError;
+
+          pendingMembersById = new Map((pendingMembers || []).map((item) => [item.id, item]));
+        }
+
+        setAdminLoanRequests(
+          (pendingLoanData || []).map((loan) => ({
+            ...loan,
+            amount: Number(loan.amount || 0),
+            repaid: Number(loan.repaid || 0),
+            memberName: pendingMembersById.get(loan.member_id)?.name || 'Member',
+            memberEmail: pendingMembersById.get(loan.member_id)?.email || 'No email',
+          }))
+        );
+      } else {
+        setAdminLoanRequests([]);
+      }
     } catch (error) {
       showToast({
         type: 'error',
@@ -398,10 +455,11 @@ export default function MemberDashboard() {
       setLoanAmount('');
       setLoanPurpose('');
       setActiveTab('loans');
+      const totalDue = Math.round(amount * (1 + LOAN_INTEREST_RATE));
       showToast({
         type: 'success',
         title: 'Loan application sent',
-        description: `Your request for ${formatKes(amount)} has been submitted.`,
+        description: `Your request for ${formatKes(amount)} has been submitted. Total due with interest: ${formatKes(totalDue)}.`,
       });
       await loadDashboard();
     } catch (error) {
@@ -409,6 +467,131 @@ export default function MemberDashboard() {
         type: 'error',
         title: 'Loan request failed',
         description: error.message || 'Loan request failed.',
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const repayableLoans = useMemo(
+    () =>
+      loans.filter((loan) => {
+        const status = String(loan.status || '').toLowerCase();
+        const outstanding = Math.max(0, getLoanTotalDue(loan) - Number(loan.repaid || 0));
+        return (status === 'approved' || status === 'active') && outstanding > 0;
+      }),
+    [loans]
+  );
+
+  const selectedRepaymentLoan = useMemo(
+    () => repayableLoans.find((loan) => String(loan.id) === String(selectedLoanId)),
+    [repayableLoans, selectedLoanId]
+  );
+
+  const visibleLoansInTab = useMemo(() => {
+    const maxRejectedAgeMs = REJECTED_LOAN_VISIBLE_HOURS * 60 * 60 * 1000;
+    const now = Date.now();
+
+    return loans.filter((loan) => {
+      const status = String(loan.status || '').toLowerCase();
+      if (status !== 'rejected') {
+        return true;
+      }
+
+      const rejectedTimestamp = loan.rejected_at ? new Date(loan.rejected_at).getTime() : NaN;
+      if (Number.isNaN(rejectedTimestamp)) {
+        return false;
+      }
+
+      return now - rejectedTimestamp < maxRejectedAgeMs;
+    });
+  }, [loans]);
+
+  const handleLoanRepayment = async () => {
+    const amount = Number(repaymentAmount);
+
+    if (!selectedLoanId) {
+      showToast({
+        type: 'error',
+        title: 'Select a loan',
+        description: 'Choose a loan to repay first.',
+      });
+      return;
+    }
+
+    if (!amount || amount <= 0) {
+      showToast({
+        type: 'error',
+        title: 'Invalid amount',
+        description: 'Enter a valid repayment amount.',
+      });
+      return;
+    }
+
+    if (!selectedRepaymentLoan) {
+      showToast({
+        type: 'error',
+        title: 'Loan not found',
+        description: 'Please refresh and try again.',
+      });
+      return;
+    }
+
+    const outstandingBalance = Math.max(
+      0,
+      getLoanTotalDue(selectedRepaymentLoan) - Number(selectedRepaymentLoan.repaid || 0)
+    );
+
+    if (amount > outstandingBalance) {
+      showToast({
+        type: 'error',
+        title: 'Amount too high',
+        description: `Repayment cannot exceed outstanding balance of ${formatKes(outstandingBalance)}.`,
+      });
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const nextRepaid = Number(selectedRepaymentLoan.repaid || 0) + amount;
+      const totalDue = getLoanTotalDue(selectedRepaymentLoan);
+      const nextStatus =
+        nextRepaid >= totalDue
+          ? 'completed'
+          : selectedRepaymentLoan.status;
+
+      const { error: updateError } = await supabase
+        .from('loans')
+        .update({ repaid: nextRepaid, status: nextStatus })
+        .eq('id', selectedRepaymentLoan.id)
+        .eq('member_id', memberId);
+
+      if (updateError) throw updateError;
+
+      const { error: transactionError } = await supabase.from('transactions').insert([
+        {
+          member_id: memberId,
+          type: 'loan_repayment',
+          amount,
+          description: `Loan repayment${selectedRepaymentLoan.purpose ? ` - ${selectedRepaymentLoan.purpose}` : ''}`,
+        },
+      ]);
+
+      if (transactionError) throw transactionError;
+
+      setRepaymentAmount('');
+      setActiveTab('transactions');
+      showToast({
+        type: 'success',
+        title: 'Repayment successful',
+        description: `${formatKes(amount)} has been applied to your loan.`,
+      });
+      await loadDashboard();
+    } catch (error) {
+      showToast({
+        type: 'error',
+        title: 'Repayment failed',
+        description: error.message || 'Could not process repayment.',
       });
     } finally {
       setBusy(false);
@@ -474,10 +657,169 @@ export default function MemberDashboard() {
     }
   };
 
+  const handleApproveLoan = async (loan) => {
+    if (!loan?.id) {
+      return;
+    }
+
+    setProcessingLoanId(String(loan.id));
+    try {
+      const { error: updateError } = await supabase
+        .from('loans')
+        .update({ status: 'approved' })
+        .eq('id', loan.id)
+        .eq('status', 'pending');
+
+      if (updateError) throw updateError;
+
+      const { error: transactionError } = await supabase.from('transactions').insert([
+        {
+          member_id: loan.member_id,
+          type: 'loan_disbursement',
+          amount: Number(loan.amount || 0),
+          description: `Loan disbursement${loan.purpose ? ` - ${loan.purpose}` : ''}`,
+        },
+      ]);
+
+      if (transactionError) throw transactionError;
+
+      showToast({
+        type: 'success',
+        title: 'Loan approved',
+        description: `${formatKes(loan.amount)} approved for ${loan.memberName}.`,
+      });
+      await loadDashboard();
+    } catch (error) {
+      showToast({
+        type: 'error',
+        title: 'Approval failed',
+        description: error.message || 'Could not approve loan.',
+      });
+    } finally {
+      setProcessingLoanId('');
+    }
+  };
+
+  const handleRejectLoan = async (loan) => {
+    if (!loan?.id) {
+      return;
+    }
+
+    setProcessingLoanId(String(loan.id));
+    try {
+      const rejectionPayload = {
+        status: 'rejected',
+        rejected_at: new Date().toISOString(),
+      };
+
+      let { error } = await supabase
+        .from('loans')
+        .update(rejectionPayload)
+        .eq('id', loan.id)
+        .eq('status', 'pending');
+
+      if (error && isMissingRejectedAtColumnError(error)) {
+        const fallback = await supabase
+          .from('loans')
+          .update({ status: 'rejected' })
+          .eq('id', loan.id)
+          .eq('status', 'pending');
+        error = fallback.error;
+      }
+
+      if (error) throw error;
+
+      showToast({
+        type: 'info',
+        title: 'Loan rejected',
+        description: `Loan request from ${loan.memberName} has been rejected.`,
+      });
+      await loadDashboard();
+    } catch (error) {
+      showToast({
+        type: 'error',
+        title: 'Rejection failed',
+        description: error.message || 'Could not reject loan.',
+      });
+    } finally {
+      setProcessingLoanId('');
+    }
+  };
+
+  const handleUpdateProfile = async () => {
+    const trimmedName = profileFullName.trim();
+    const trimmedPhone = profilePhoneNumber.trim();
+
+    if (!trimmedName || !trimmedPhone) {
+      showToast({
+        type: 'error',
+        title: 'Missing details',
+        description: 'Full name and phone number are required.',
+      });
+      return;
+    }
+
+    setProfileSaving(true);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const accessToken = session?.access_token;
+      if (!accessToken) {
+        showToast({
+          type: 'error',
+          title: 'Session expired',
+          description: 'Please log in again.',
+        });
+        setProfileSaving(false);
+        return;
+      }
+
+      const response = await fetch('/api/complete-profile', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          accessToken,
+          fullName: trimmedName,
+          phoneNumber: trimmedPhone,
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Could not update profile.');
+      }
+
+      showToast({
+        type: 'success',
+        title: 'Profile updated',
+        description: 'Your personal details were saved successfully.',
+      });
+      await loadDashboard();
+    } catch (error) {
+      showToast({
+        type: 'error',
+        title: 'Update failed',
+        description: error.message || 'Could not update personal details.',
+      });
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
   const totals = useMemo(() => {
     const totalSavings = Number(member?.savings || 0);
-    const activeLoans = loans.filter((loan) => loan.status !== 'completed' && loan.status !== 'rejected');
-    const totalLoanBalance = activeLoans.reduce((sum, loan) => sum + Math.max(0, loan.amount - loan.repaid), 0);
+    const activeLoans = loans.filter((loan) => {
+      const status = String(loan.status || '').toLowerCase();
+      return status === 'approved' || status === 'active';
+    });
+    const totalLoanBalance = activeLoans.reduce(
+      (sum, loan) => sum + Math.max(0, getLoanTotalDue(loan) - Number(loan.repaid || 0)),
+      0
+    );
     const totalRepaid = loans.reduce((sum, loan) => sum + loan.repaid, 0);
 
     return {
@@ -499,6 +841,18 @@ export default function MemberDashboard() {
       setActiveTab('admin alerts');
     }
   }, [activeTab, member, router.pathname]);
+
+  useEffect(() => {
+    if (repayableLoans.length === 0) {
+      setSelectedLoanId('');
+      return;
+    }
+
+    const hasCurrentSelection = repayableLoans.some((loan) => String(loan.id) === String(selectedLoanId));
+    if (!hasCurrentSelection) {
+      setSelectedLoanId(String(repayableLoans[0].id));
+    }
+  }, [repayableLoans, selectedLoanId]);
 
   if (loading) {
     return <div className="min-h-screen bg-[radial-gradient(circle_at_top,#1e3a8a_0%,#102045_42%,#081226_100%)] p-6 text-lg text-white">Loading dashboard...</div>;
@@ -523,6 +877,16 @@ export default function MemberDashboard() {
             </div>
 
             <div className="flex items-start gap-3 self-start">
+              {member.isAdmin ? (
+                <button
+                  type="button"
+                  onClick={() => router.push('/admin-analytics')}
+                  className="rounded-2xl border border-sky-200 bg-sky-300 px-4 py-2 text-base text-slate-900 sm:text-lg"
+                  style={{ backgroundColor: '#7dd3fc', color: '#0f172a', borderColor: '#bae6fd' }}
+                >
+                  Analytics
+                </button>
+              ) : null}
               <NotificationBell
                 notifications={notifications}
                 unreadCount={unreadNotifications}
@@ -549,7 +913,14 @@ export default function MemberDashboard() {
               <p className="text-sm font-semibold uppercase tracking-[0.25em]" style={{ color: '#facc15' }}>Menu</p>
             </div>
             <nav className="flex flex-wrap items-center justify-center gap-2">
-              {['overview', 'savings', 'loans', 'transactions', ...(member.isAdmin ? ['admin alerts'] : [])].map((tab) => (
+              {[
+                'overview',
+                'savings',
+                'loans',
+                'transactions',
+                'profile',
+                ...(member.isAdmin ? ['loan approvals', 'admin alerts'] : []),
+              ].map((tab) => (
                 <TabButton key={tab} tab={tab} activeTab={activeTab} onClick={setActiveTab} />
               ))}
             </nav>
@@ -567,7 +938,7 @@ export default function MemberDashboard() {
             {activeTab === 'savings' && (
               <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
                 <SectionCard title="Deposit Savings">
-                  <label className="block text-lg font-medium">Amount</label>
+                  <label className="block text-lg font-medium" style={{ color: '#ca8a04' }}>Amount</label>
                   <StyledInput
                     type="number"
                     value={depositAmount}
@@ -599,7 +970,7 @@ export default function MemberDashboard() {
                 <SectionCard title="Apply for Loan">
                   <div className="space-y-4">
                     <div>
-                      <label className="block text-lg font-medium">Loan Amount</label>
+                      <label className="block text-lg font-medium" style={{ color: '#ca8a04' }}>Loan Amount</label>
                       <StyledInput
                         type="number"
                         value={loanAmount}
@@ -609,7 +980,7 @@ export default function MemberDashboard() {
                     </div>
 
                     <div>
-                      <label className="block text-lg font-medium">Purpose</label>
+                      <label className="block text-lg font-medium" style={{ color: '#ca8a04' }}>Purpose</label>
                       <StyledInput
                         value={loanPurpose}
                         onChange={(event) => setLoanPurpose(event.target.value)}
@@ -629,20 +1000,83 @@ export default function MemberDashboard() {
                       Request Loan
                     </button>
                   </div>
+
+                  <div className="mt-8 border-t border-slate-200 pt-6">
+                    <h3 className="text-lg font-semibold" style={{ color: '#16a34a' }}>Repay Loan</h3>
+                    {repayableLoans.length === 0 ? (
+                      <p className="mt-3 text-sm" style={{ color: '#ca8a04' }}>No active loan with outstanding balance.</p>
+                    ) : (
+                      <div className="mt-3 space-y-4">
+                        <div>
+                          <label className="block text-sm font-medium" style={{ color: '#ca8a04' }}>Select Loan</label>
+                          <select
+                            value={selectedLoanId}
+                            onChange={(event) => setSelectedLoanId(event.target.value)}
+                            className="mx-auto mt-2 block w-56 max-w-full rounded-full border border-sky-100 bg-white px-4 py-2 text-center text-sm text-slate-900 shadow-[0_10px_24px_rgba(15,23,42,0.08)] outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-100 sm:w-64"
+                          >
+                            {repayableLoans.map((loan) => {
+                              const balance = Math.max(0, getLoanTotalDue(loan) - Number(loan.repaid || 0));
+                              return (
+                                <option key={loan.id} value={String(loan.id)}>
+                                  {(loan.purpose || 'Loan')} - {formatKes(balance)} balance
+                                </option>
+                              );
+                            })}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium" style={{ color: '#ca8a04' }}>Repayment Amount</label>
+                          <StyledInput
+                            type="number"
+                            value={repaymentAmount}
+                            onChange={(event) => setRepaymentAmount(event.target.value)}
+                            placeholder="Enter amount"
+                          />
+                          {selectedRepaymentLoan ? (
+                            <p className="mt-2 text-xs" style={{ color: '#ca8a04' }}>
+                              Outstanding:{' '}
+                              {formatKes(
+                                Math.max(
+                                  0,
+                                  getLoanTotalDue(selectedRepaymentLoan) - Number(selectedRepaymentLoan.repaid || 0)
+                                )
+                              )}
+                            </p>
+                          ) : null}
+                        </div>
+
+                        <div className="flex justify-center">
+                          <button
+                            type="button"
+                            onClick={handleLoanRepayment}
+                            disabled={busy}
+                            className="rounded-2xl border border-sky-200 bg-sky-300 px-4 py-2 text-lg text-slate-900 disabled:opacity-60"
+                            style={{ backgroundColor: '#7dd3fc', color: '#0f172a', borderColor: '#bae6fd' }}
+                          >
+                            Repay Loan
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </SectionCard>
 
                 <SectionCard title="Your Loans">
                   <div className="space-y-4">
-                    {loans.length === 0 ? (
-                      <p className="text-xl">No loans found.</p>
+                    {visibleLoansInTab.length === 0 ? (
+                      <p className="text-xl" style={{ color: '#ca8a04' }}>No loans found.</p>
                     ) : (
-                      loans.map((loan) => (
+                      visibleLoansInTab.map((loan) => (
                         <div key={loan.id} className="rounded border border-slate-200 p-4 text-center">
-                          <p className="text-xl font-semibold">{loan.purpose || 'Loan'}</p>
-                          <p className="mt-2 text-base">Status: {loan.status}</p>
-                          <p className="mt-2 text-base">Amount: {formatKes(loan.amount)}</p>
-                          <p className="mt-2 text-base">Repaid: {formatKes(loan.repaid)}</p>
-                          <p className="mt-2 text-base">Balance: {formatKes(Math.max(0, loan.amount - loan.repaid))}</p>
+                          <p className="text-xl font-semibold" style={{ color: '#16a34a' }}>{loan.purpose || 'Loan'}</p>
+                          <p className="mt-2 text-base" style={{ color: '#ca8a04' }}>Status: {loan.status}</p>
+                          <p className="mt-2 text-base" style={{ color: '#15803d' }}>Amount: {formatKes(loan.amount)}</p>
+                          <p className="mt-2 text-base" style={{ color: '#15803d' }}>Total Due (10%): {formatKes(getLoanTotalDue(loan))}</p>
+                          <p className="mt-2 text-base" style={{ color: '#15803d' }}>Repaid: {formatKes(loan.repaid)}</p>
+                          <p className="mt-2 text-base" style={{ color: '#ca8a04' }}>
+                            Balance: {formatKes(Math.max(0, getLoanTotalDue(loan) - Number(loan.repaid || 0)))}
+                          </p>
                         </div>
                       ))
                     )}
@@ -678,6 +1112,59 @@ export default function MemberDashboard() {
               </SectionCard>
             )}
 
+            {activeTab === 'profile' && (
+              <SectionCard title="Personal Details">
+                <div className="mx-auto w-full max-w-[320px] space-y-2.5 text-left">
+                  <div>
+                    <label className="block text-sm font-semibold" style={{ color: '#ca8a04' }}>Email Address</label>
+                    <input
+                      type="email"
+                      value={member.email}
+                      disabled
+                      className="mt-1 w-[320px] max-w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-900 opacity-100 disabled:opacity-100"
+                      style={{ backgroundColor: '#ffffff', color: '#0f172a', WebkitTextFillColor: '#0f172a' }}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold" style={{ color: '#ca8a04' }}>Full Name</label>
+                    <input
+                      type="text"
+                      value={profileFullName}
+                      onChange={(event) => setProfileFullName(event.target.value)}
+                      placeholder="Enter full name"
+                      className="mt-1 w-[320px] max-w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 outline-none focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                      disabled={profileSaving}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold" style={{ color: '#ca8a04' }}>Phone Number</label>
+                    <input
+                      type="tel"
+                      value={profilePhoneNumber}
+                      onChange={(event) => setProfilePhoneNumber(event.target.value)}
+                      placeholder="+2547..."
+                      className="mt-1 w-[320px] max-w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 outline-none focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                      disabled={profileSaving}
+                    />
+                  </div>
+
+                  <div className="pt-2 text-center">
+                    <button
+                      type="button"
+                      onClick={handleUpdateProfile}
+                      disabled={profileSaving}
+                      className="rounded-2xl border border-sky-200 bg-sky-300 px-5 py-2.5 text-base font-semibold text-slate-900 disabled:opacity-60"
+                      style={{ backgroundColor: '#7dd3fc', color: '#0f172a', borderColor: '#bae6fd' }}
+                    >
+                      {profileSaving ? 'Saving...' : 'Save Details'}
+                    </button>
+                  </div>
+                </div>
+              </SectionCard>
+            )}
+
             {activeTab === 'admin alerts' && member.isAdmin ? (
               <AdminNotificationPanel
                 audience={notificationAudience}
@@ -692,6 +1179,56 @@ export default function MemberDashboard() {
                 onSend={handleSendNotification}
                 busy={busy}
               />
+            ) : null}
+
+            {activeTab === 'loan approvals' && member.isAdmin ? (
+              <SectionCard title="Loan Approvals">
+                <div className="space-y-4">
+                  {adminLoanRequests.length === 0 ? (
+                    <p className="text-xl" style={{ color: '#ca8a04' }}>No pending loan requests.</p>
+                  ) : (
+                    adminLoanRequests.map((loan) => (
+                      <div
+                        key={loan.id}
+                        className="rounded-2xl border border-white/10 bg-[linear-gradient(180deg,#13284f_0%,#0f1f3f_100%)] p-4 text-left shadow-[0_10px_25px_rgba(2,8,23,0.22)]"
+                      >
+                        <p className="text-lg font-semibold" style={{ color: '#16a34a' }}>
+                          {loan.memberName}
+                        </p>
+                        <p className="mt-1 text-sm" style={{ color: '#ca8a04' }}>{loan.memberEmail}</p>
+                        <p className="mt-2 text-sm" style={{ color: '#15803d' }}>
+                          Amount: {formatKes(loan.amount)}
+                        </p>
+                        <p className="mt-1 text-sm" style={{ color: '#ca8a04' }}>
+                          Purpose: {loan.purpose || 'General loan'}
+                        </p>
+                        <p className="mt-1 text-sm" style={{ color: '#ca8a04' }}>
+                          Requested:{' '}
+                          {loan.created_at ? new Date(loan.created_at).toLocaleDateString() : 'N/A'}
+                        </p>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleApproveLoan(loan)}
+                            disabled={processingLoanId === String(loan.id)}
+                            className="rounded-xl border border-emerald-300 bg-emerald-400 px-4 py-2 text-sm font-semibold text-slate-900 disabled:opacity-60"
+                          >
+                            {processingLoanId === String(loan.id) ? 'Processing...' : 'Approve & Disburse'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRejectLoan(loan)}
+                            disabled={processingLoanId === String(loan.id)}
+                            className="rounded-xl border border-rose-300 bg-rose-300 px-4 py-2 text-sm font-semibold text-slate-900 disabled:opacity-60"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </SectionCard>
             ) : null}
           </div>
         </div>

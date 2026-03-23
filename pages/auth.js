@@ -4,6 +4,63 @@ import { supabase } from '../lib/supabaseClient'
 import { useToast } from '../components/ToastProvider'
 import { getCurrentMemberProfile, getHomeRouteForRole, normalizeRole, syncRoleSession } from '../lib/auth'
 
+function isMissingColumnError(error, columnName) {
+  const column = String(columnName || '').toLowerCase()
+  const message = String(error?.message || '').toLowerCase()
+  const details = String(error?.details || '').toLowerCase()
+  const isColumnMentioned = message.includes(column) || details.includes(column)
+  const looksLikeSchemaError =
+    message.includes('does not exist') ||
+    details.includes('does not exist') ||
+    message.includes('schema cache') ||
+    details.includes('schema cache') ||
+    message.includes('could not find column') ||
+    details.includes('could not find column')
+
+  return isColumnMentioned && looksLikeSchemaError
+}
+
+function stripUnsupportedColumns(payload, error) {
+  const nextPayload = { ...payload }
+  const optionalColumns = ['phone_number', 'role', 'is_admin', 'savings']
+
+  optionalColumns.forEach((column) => {
+    if (isMissingColumnError(error, column)) {
+      delete nextPayload[column]
+    }
+  })
+
+  return nextPayload
+}
+
+async function insertMemberWithFallback(payload) {
+  let currentPayload = { ...payload }
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const { error } = await supabase.from('members').insert([currentPayload])
+    if (!error) {
+      return null
+    }
+
+    const nextPayload = stripUnsupportedColumns(currentPayload, error)
+    if (Object.keys(nextPayload).length === Object.keys(currentPayload).length) {
+      return error
+    }
+    currentPayload = nextPayload
+  }
+
+  return new Error('Could not insert member profile with current schema.')
+}
+
+function hasProfileDetails(user, member) {
+  const memberName = String(member?.name || '').trim()
+  const metadataName = String(user?.user_metadata?.full_name || '').trim()
+  const memberPhone = String(member?.phone_number || '').trim()
+  const metadataPhone = String(user?.user_metadata?.phone_number || '').trim()
+
+  return Boolean((memberName || metadataName) && (memberPhone || metadataPhone))
+}
+
 export default function AuthPage() {
   const { showToast } = useToast()
   const [isLogin, setIsLogin] = useState(true)
@@ -11,6 +68,7 @@ export default function AuthPage() {
   const [password, setPassword] = useState('')
   const [fullName, setFullName] = useState('')
   const [phoneNumber, setPhoneNumber] = useState('')
+  const [needsProfileCompletion, setNeedsProfileCompletion] = useState(false)
   const [loading, setLoading] = useState(false)
   const router = useRouter()
 
@@ -65,16 +123,17 @@ export default function AuthPage() {
       }
 
       if (data.user) {
-        const { error: insertError } = await supabase.from('members').insert([
-          {
-            id: data.user.id,
-            email: data.user.email || email,
-            name: fullName,
-            savings: 0,
-            role: 'member',
-            is_admin: false
-          }
-        ])
+        const memberPayload = {
+          id: data.user.id,
+          email: data.user.email || email,
+          name: fullName,
+          phone_number: phoneNumber,
+          savings: 0,
+          role: 'member',
+          is_admin: false
+        }
+
+        const insertError = await insertMemberWithFallback(memberPayload)
 
         if (insertError) {
           console.error('Member creation error:', insertError)
@@ -118,7 +177,15 @@ export default function AuthPage() {
         return
       }
 
-      const { member } = await getCurrentMemberProfile()
+      const { user, member } = await getCurrentMemberProfile()
+      if (!hasProfileDetails(user, member)) {
+        showToast({
+          type: 'info',
+          title: 'Update profile details',
+          description: 'Please update your full name and phone number in the Profile tab.',
+        })
+      }
+
       const role = normalizeRole(member)
       const syncedRole = await syncRoleSession(role)
 
@@ -126,6 +193,81 @@ export default function AuthPage() {
       setTimeout(() => router.push(getHomeRouteForRole(syncedRole)), 800)
     } catch (err) {
       showToast({ type: 'error', title: 'Login failed', description: err.message })
+      setLoading(false)
+    }
+  }
+
+  const handleCompleteProfile = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+
+    const trimmedName = fullName.trim()
+    const trimmedPhone = phoneNumber.trim()
+
+    if (!trimmedName || !trimmedPhone) {
+      showToast({
+        type: 'error',
+        title: 'Missing details',
+        description: 'Full name and phone number are required.',
+      })
+      setLoading(false)
+      return
+    }
+
+    try {
+      const {
+        data: { session },
+        error: authError,
+      } = await supabase.auth.getSession()
+      const user = session?.user
+
+      if (authError || !session?.access_token || !user) {
+        showToast({
+          type: 'error',
+          title: 'Session expired',
+          description: 'Please log in again.',
+        })
+        setNeedsProfileCompletion(false)
+        setIsLogin(true)
+        setLoading(false)
+        return
+      }
+
+      const response = await fetch('/api/complete-profile', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          accessToken: session.access_token,
+          fullName: trimmedName,
+          phoneNumber: trimmedPhone,
+        }),
+      })
+
+      const payload = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Could not update profile details.')
+      }
+
+      const { member: updatedMember } = await getCurrentMemberProfile()
+      const role = normalizeRole(updatedMember)
+      const syncedRole = await syncRoleSession(role)
+
+      showToast({
+        type: 'success',
+        title: 'Profile updated',
+        description: 'Redirecting to your dashboard.',
+      })
+      setNeedsProfileCompletion(false)
+      setTimeout(() => router.push(getHomeRouteForRole(syncedRole)), 700)
+    } catch (err) {
+      showToast({
+        type: 'error',
+        title: 'Update failed',
+        description: err.message || 'Could not update profile details.',
+      })
       setLoading(false)
     }
   }
@@ -199,7 +341,48 @@ export default function AuthPage() {
                 </button>
               </div>
 
-              {isLogin ? (
+              {needsProfileCompletion ? (
+                <form onSubmit={handleCompleteProfile} className="mx-auto mt-6 max-w-xs space-y-4">
+                  <p className="text-center text-sm font-semibold" style={{ color: '#ca8a04' }}>
+                    One last step. Add your personal details to continue.
+                  </p>
+
+                  <div className="mx-auto w-64 max-w-full">
+                    <label className="block text-center text-sm font-bold leading-none text-slate-800" style={{ marginBottom: '2px' }}>Full Name</label>
+                    <input
+                      type="text"
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
+                      placeholder="John Doe"
+                      className="mx-auto block w-64 max-w-full rounded-full border border-sky-100 bg-white px-4 py-2.5 text-center text-sm text-slate-900 shadow-[0_10px_24px_rgba(15,23,42,0.08)] outline-none transition placeholder:text-slate-400 focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                      style={{ marginTop: 0 }}
+                      disabled={loading}
+                    />
+                  </div>
+
+                  <div className="mx-auto w-64 max-w-full">
+                    <label className="block text-center text-sm font-bold leading-none text-slate-800" style={{ marginBottom: '2px' }}>Phone Number</label>
+                    <input
+                      type="tel"
+                      value={phoneNumber}
+                      onChange={(e) => setPhoneNumber(e.target.value)}
+                      placeholder="+254710000000"
+                      className="mx-auto block w-64 max-w-full rounded-full border border-sky-100 bg-white px-4 py-2.5 text-center text-sm text-slate-900 shadow-[0_10px_24px_rgba(15,23,42,0.08)] outline-none transition placeholder:text-slate-400 focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                      style={{ marginTop: 0 }}
+                      disabled={loading}
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="mx-auto block w-64 max-w-full rounded-full bg-sky-300 px-4 py-2.5 text-sm font-bold text-slate-900 transition hover:bg-sky-200 disabled:opacity-60"
+                    style={{ backgroundColor: '#7dd3fc', color: '#0f172a' }}
+                  >
+                    {loading ? 'Saving details...' : 'Continue'}
+                  </button>
+                </form>
+              ) : isLogin ? (
                 <form onSubmit={handleLogin} className="mx-auto mt-6 max-w-xs space-y-4">
                   <div className="mx-auto w-64 max-w-full">
                     <label className="block text-center text-sm font-bold leading-none" style={{ color: '#fde047', marginBottom: '2px' }}>Email Address</label>
