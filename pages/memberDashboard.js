@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabaseClient';
 import NotificationBell from '../components/NotificationBell';
 import AdminNotificationPanel from '../components/AdminNotificationPanel';
 import { useToast } from '../components/ToastProvider';
-import { clearRoleSession, getHomeRouteForRole, normalizeRole } from '../lib/auth';
+import { clearRoleSession, getHomeRouteForRole, normalizeRole, syncRoleSession } from '../lib/auth';
 import {
   fetchMembersForNotifications,
   fetchNotificationsForMember,
@@ -127,6 +127,48 @@ export default function MemberDashboard() {
   const [adminLoanRequests, setAdminLoanRequests] = useState([]);
   const [processingLoanId, setProcessingLoanId] = useState('');
 
+  const fetchWithSession = useCallback(
+    async (url, options = {}) => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const accessToken = session?.access_token;
+      if (!accessToken) {
+        router.replace('/auth');
+        throw new Error('Session expired. Please log in again.');
+      }
+
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+          ...(options.headers || {}),
+        },
+      });
+
+      const payload = await response.json().catch(() => ({}));
+
+      if (response.status === 401) {
+        router.replace('/auth');
+        throw new Error(payload?.error || 'Session expired. Please log in again.');
+      }
+
+      if (response.status === 403) {
+        router.replace('/dashboard');
+        throw new Error(payload?.error || 'Admin access required.');
+      }
+
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Request failed.');
+      }
+
+      return payload;
+    },
+    [router]
+  );
+
   const loadDashboard = useCallback(async () => {
     setLoading(true);
 
@@ -152,23 +194,15 @@ export default function MemberDashboard() {
       let resolvedMember = memberData;
 
       if (memberError && memberError.code === 'PGRST116') {
-        const newMember = {
-          id: user.id,
-          email: user.email || '',
-          name: user.user_metadata?.full_name || 'Member',
-          savings: 0,
-          role: 'member',
-          is_admin: false,
-        };
-
-        const { data: insertedMember, error: insertError } = await supabase
+        await syncRoleSession('member');
+        const { data: syncedMember, error: syncedMemberError } = await supabase
           .from('members')
-          .insert([newMember])
-          .select()
+          .select('*')
+          .eq('id', user.id)
           .single();
 
-        if (insertError) throw insertError;
-        resolvedMember = insertedMember;
+        if (syncedMemberError) throw syncedMemberError;
+        resolvedMember = syncedMember;
       } else if (memberError) {
         throw memberError;
       }
@@ -223,39 +257,10 @@ export default function MemberDashboard() {
       );
 
       if (resolvedRole === 'admin') {
-        const { data: pendingLoanData, error: pendingLoanError } = await supabase
-          .from('loans')
-          .select('id, member_id, amount, purpose, status, repaid, created_at')
-          .eq('status', 'pending')
-          .order('created_at', { ascending: false });
-
-        if (pendingLoanError) throw pendingLoanError;
-
-        const pendingMemberIds = Array.from(
-          new Set((pendingLoanData || []).map((loan) => loan.member_id).filter(Boolean))
-        );
-
-        let pendingMembersById = new Map();
-        if (pendingMemberIds.length > 0) {
-          const { data: pendingMembers, error: pendingMembersError } = await supabase
-            .from('members')
-            .select('id,name,email')
-            .in('id', pendingMemberIds);
-
-          if (pendingMembersError) throw pendingMembersError;
-
-          pendingMembersById = new Map((pendingMembers || []).map((item) => [item.id, item]));
-        }
-
-        setAdminLoanRequests(
-          (pendingLoanData || []).map((loan) => ({
-            ...loan,
-            amount: Number(loan.amount || 0),
-            repaid: Number(loan.repaid || 0),
-            memberName: pendingMembersById.get(loan.member_id)?.name || 'Member',
-            memberEmail: pendingMembersById.get(loan.member_id)?.email || 'No email',
-          }))
-        );
+        const payload = await fetchWithSession('/api/admin/pending-loans', {
+          method: 'GET',
+        });
+        setAdminLoanRequests(payload?.loans || []);
       } else {
         setAdminLoanRequests([]);
       }
@@ -268,7 +273,7 @@ export default function MemberDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [router, showToast]);
+  }, [fetchWithSession, router, showToast]);
 
   useEffect(() => {
     void loadDashboard();
@@ -379,25 +384,10 @@ export default function MemberDashboard() {
 
     setBusy(true);
     try {
-      const nextSavings = Number(member?.savings || 0) + amount;
-
-      const { error: memberUpdateError } = await supabase
-        .from('members')
-        .update({ savings: nextSavings })
-        .eq('id', memberId);
-
-      if (memberUpdateError) throw memberUpdateError;
-
-      const { error: transactionError } = await supabase.from('transactions').insert([
-        {
-          member_id: memberId,
-          type: 'deposit',
-          amount,
-          description: 'Savings deposit',
-        },
-      ]);
-
-      if (transactionError) throw transactionError;
+      await fetchWithSession('/api/member/deposit', {
+        method: 'POST',
+        body: JSON.stringify({ amount }),
+      });
 
       setDepositAmount('');
       setActiveTab('transactions');
@@ -440,17 +430,13 @@ export default function MemberDashboard() {
 
     setBusy(true);
     try {
-      const { error } = await supabase.from('loans').insert([
-        {
-          member_id: memberId,
+      await fetchWithSession('/api/member/loan-request', {
+        method: 'POST',
+        body: JSON.stringify({
           amount,
           purpose: loanPurpose.trim(),
-          status: 'pending',
-          repaid: 0,
-        },
-      ]);
-
-      if (error) throw error;
+        }),
+      });
 
       setLoanAmount('');
       setLoanPurpose('');
@@ -553,31 +539,13 @@ export default function MemberDashboard() {
 
     setBusy(true);
     try {
-      const nextRepaid = Number(selectedRepaymentLoan.repaid || 0) + amount;
-      const totalDue = getLoanTotalDue(selectedRepaymentLoan);
-      const nextStatus =
-        nextRepaid >= totalDue
-          ? 'completed'
-          : selectedRepaymentLoan.status;
-
-      const { error: updateError } = await supabase
-        .from('loans')
-        .update({ repaid: nextRepaid, status: nextStatus })
-        .eq('id', selectedRepaymentLoan.id)
-        .eq('member_id', memberId);
-
-      if (updateError) throw updateError;
-
-      const { error: transactionError } = await supabase.from('transactions').insert([
-        {
-          member_id: memberId,
-          type: 'loan_repayment',
+      await fetchWithSession('/api/member/loan-repayment', {
+        method: 'POST',
+        body: JSON.stringify({
+          loanId: selectedRepaymentLoan.id,
           amount,
-          description: `Loan repayment${selectedRepaymentLoan.purpose ? ` - ${selectedRepaymentLoan.purpose}` : ''}`,
-        },
-      ]);
-
-      if (transactionError) throw transactionError;
+        }),
+      });
 
       setRepaymentAmount('');
       setActiveTab('transactions');
@@ -664,24 +632,13 @@ export default function MemberDashboard() {
 
     setProcessingLoanId(String(loan.id));
     try {
-      const { error: updateError } = await supabase
-        .from('loans')
-        .update({ status: 'approved' })
-        .eq('id', loan.id)
-        .eq('status', 'pending');
-
-      if (updateError) throw updateError;
-
-      const { error: transactionError } = await supabase.from('transactions').insert([
-        {
-          member_id: loan.member_id,
-          type: 'loan_disbursement',
-          amount: Number(loan.amount || 0),
-          description: `Loan disbursement${loan.purpose ? ` - ${loan.purpose}` : ''}`,
-        },
-      ]);
-
-      if (transactionError) throw transactionError;
+      await fetchWithSession('/api/admin/loan-decision', {
+        method: 'POST',
+        body: JSON.stringify({
+          loanId: loan.id,
+          action: 'approve',
+        }),
+      });
 
       showToast({
         type: 'success',
@@ -707,27 +664,13 @@ export default function MemberDashboard() {
 
     setProcessingLoanId(String(loan.id));
     try {
-      const rejectionPayload = {
-        status: 'rejected',
-        rejected_at: new Date().toISOString(),
-      };
-
-      let { error } = await supabase
-        .from('loans')
-        .update(rejectionPayload)
-        .eq('id', loan.id)
-        .eq('status', 'pending');
-
-      if (error && isMissingRejectedAtColumnError(error)) {
-        const fallback = await supabase
-          .from('loans')
-          .update({ status: 'rejected' })
-          .eq('id', loan.id)
-          .eq('status', 'pending');
-        error = fallback.error;
-      }
-
-      if (error) throw error;
+      await fetchWithSession('/api/admin/loan-decision', {
+        method: 'POST',
+        body: JSON.stringify({
+          loanId: loan.id,
+          action: 'reject',
+        }),
+      });
 
       showToast({
         type: 'info',

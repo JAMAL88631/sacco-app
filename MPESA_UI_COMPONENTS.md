@@ -91,7 +91,7 @@ const handleTabChange = (tab) => {
 
 ## Complete Example
 
-A full working example is available in `pages/mpesa-dashboard.js`:
+A full working example was previously available in a dedicated demo page, but that legacy demo route has been removed from the app:
 
 ```jsx
 import BalanceCard from '../components/BalanceCard';
@@ -144,7 +144,7 @@ export default function MPesaDashboard() {
 
 ## Accessing the Demo
 
-Visit `http://localhost:3000/mpesa-dashboard` to see the M-Pesa UI in action.
+Use the active dashboard routes in the app instead of the removed `mpesa-dashboard` demo page.
 
 ## Styling & Customization
 

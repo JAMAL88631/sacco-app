@@ -33,25 +33,6 @@ function stripUnsupportedColumns(payload, error) {
   return nextPayload
 }
 
-async function insertMemberWithFallback(payload) {
-  let currentPayload = { ...payload }
-
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const { error } = await supabase.from('members').insert([currentPayload])
-    if (!error) {
-      return null
-    }
-
-    const nextPayload = stripUnsupportedColumns(currentPayload, error)
-    if (Object.keys(nextPayload).length === Object.keys(currentPayload).length) {
-      return error
-    }
-    currentPayload = nextPayload
-  }
-
-  return new Error('Could not insert member profile with current schema.')
-}
-
 function hasProfileDetails(user, member) {
   const memberName = String(member?.name || '').trim()
   const metadataName = String(user?.user_metadata?.full_name || '').trim()
@@ -123,25 +104,7 @@ export default function AuthPage() {
       }
 
       if (data.user) {
-        const memberPayload = {
-          id: data.user.id,
-          email: data.user.email || email,
-          name: fullName,
-          phone_number: phoneNumber,
-          savings: 0,
-          role: 'member',
-          is_admin: false
-        }
-
-        const insertError = await insertMemberWithFallback(memberPayload)
-
-        if (insertError) {
-          console.error('Member creation error:', insertError)
-          showToast({ type: 'info', title: 'Account created', description: 'Please log in to continue.' })
-        } else {
-          showToast({ type: 'success', title: 'Account created', description: 'You can now log in to your dashboard.' })
-        }
-
+        showToast({ type: 'success', title: 'Account created', description: 'You can now log in to your dashboard.' })
         setEmail('')
         setPassword('')
         setFullName('')
