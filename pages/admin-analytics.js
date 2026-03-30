@@ -292,7 +292,7 @@ export default function AdminAnalyticsDashboard() {
                 Admin analytics
               </h1>
               <p className="mt-4 text-xl text-yellow-700 sm:text-2xl" style={{ color: '#ca8a04' }}>
-                Live SACCO insights across members, savings, and loans.
+                Live Western Sacco Union insights across members, savings, and loans.
               </p>
               {error ? (
                 <p className="mt-3 text-sm font-semibold text-red-600">{error}</p>

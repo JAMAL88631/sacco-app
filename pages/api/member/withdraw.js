@@ -4,6 +4,10 @@ import {
   parsePositiveAmount,
 } from '../../../lib/serverAuth';
 
+function calculateRegularBalance(entries) {
+  return (entries || []).reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -16,13 +20,8 @@ export default async function handler(req, res) {
   }
 
   const amount = parsePositiveAmount(req.body?.amount);
-  const savingsType = String(req.body?.savingsType || 'REGULAR').trim().toUpperCase();
   if (!amount) {
-    return res.status(400).json({ error: 'Enter a valid deposit amount.' });
-  }
-
-  if (savingsType !== 'REGULAR' && savingsType !== 'LONG_TERM') {
-    return res.status(400).json({ error: 'Choose a valid savings type.' });
+    return res.status(400).json({ error: 'Enter a valid withdrawal amount.' });
   }
 
   try {
@@ -38,15 +37,30 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'Member profile not found.' });
     }
 
-    const nextSavings = Number(member.savings || 0) + amount;
+    const { data: regularSavingsEntries, error: regularSavingsError } = await serviceClient
+      .from('savings')
+      .select('amount')
+      .eq('member_id', authState.user.id)
+      .eq('savings_type', 'REGULAR');
+
+    if (regularSavingsError) {
+      throw regularSavingsError;
+    }
+
+    const availableRegularBalance = calculateRegularBalance(regularSavingsEntries);
+    if (amount > availableRegularBalance) {
+      return res.status(400).json({ error: 'Withdrawal exceeds your available regular savings.' });
+    }
+
+    const nextSavings = Number(member.savings || 0) - amount;
 
     const { error: savingsEntryError } = await serviceClient.from('savings').insert([
       {
         member_id: authState.user.id,
-        amount,
-        savings_type: savingsType,
-        locked: savingsType === 'LONG_TERM',
-        source: savingsType === 'LONG_TERM' ? 'MEMBER_LOCKED_DEPOSIT' : 'MEMBER_DEPOSIT',
+        amount: -amount,
+        savings_type: 'REGULAR',
+        locked: false,
+        source: 'MEMBER_WITHDRAWAL',
       },
     ]);
 
@@ -66,9 +80,9 @@ export default async function handler(req, res) {
     const { error: transactionError } = await serviceClient.from('transactions').insert([
       {
         member_id: authState.user.id,
-        type: 'deposit',
+        type: 'withdrawal',
         amount,
-        description: savingsType === 'LONG_TERM' ? 'Locked savings deposit' : 'Regular savings deposit',
+        description: 'Regular savings withdrawal',
       },
     ]);
 
@@ -76,8 +90,8 @@ export default async function handler(req, res) {
       throw transactionError;
     }
 
-    return res.status(200).json({ ok: true, savings: nextSavings });
+    return res.status(200).json({ ok: true, savings: nextSavings, regularSavings: availableRegularBalance - amount });
   } catch (error) {
-    return res.status(500).json({ error: error.message || 'Deposit failed.' });
+    return res.status(500).json({ error: error.message || 'Withdrawal failed.' });
   }
 }

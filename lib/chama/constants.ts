@@ -1,0 +1,5 @@
+export const CHAMA_MONTHLY_TOTAL = 550;
+export const CHAMA_CONTRIBUTION_AMOUNT = 500;
+export const CHAMA_LOCKED_SAVINGS_AMOUNT = 50;
+export const CHAMA_LOCK_PERIOD_MONTHS = 12;
+export const CHAMA_LATE_FINE_AMOUNT = 50;

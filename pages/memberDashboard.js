@@ -1,5 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
+import {
+  BarChart3,
+  BellRing,
+  ChevronLeft,
+  ChevronRight,
+  HandCoins,
+  LayoutDashboard,
+  Menu,
+  PiggyBank,
+  UserRound,
+  Wallet,
+  X,
+} from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 import NotificationBell from '../components/NotificationBell';
 import AdminNotificationPanel from '../components/AdminNotificationPanel';
@@ -31,37 +44,20 @@ function isMissingRejectedAtColumnError(error) {
   return message.includes('rejected_at') || details.includes('rejected_at');
 }
 
-function TabButton({ tab, activeTab, onClick }) {
+function SidebarItem({ active, collapsed, icon, label, onClick }) {
   return (
     <button
       type="button"
-      onClick={() => onClick(tab)}
-      className={`inline-flex h-9 min-w-[110px] items-center justify-center rounded-md border px-3 text-xs font-semibold capitalize tracking-[0.04em] transition sm:min-w-[120px] ${
-        activeTab === tab
-          ? 'border-sky-200 bg-sky-300 text-slate-900 shadow-[0_10px_22px_rgba(125,211,252,0.18)]'
-          : 'border-white/10 bg-white/5 text-yellow-200 hover:bg-white/12'
-      }`}
-      style={
-        activeTab === tab
-          ? {
-              backgroundColor: '#7dd3fc',
-              color: '#0f172a',
-              borderColor: '#bae6fd',
-              borderRadius: '10px',
-              minHeight: '36px',
-              paddingLeft: '12px',
-              paddingRight: '12px',
-            }
-          : {
-              color: '#facc15',
-              borderRadius: '10px',
-              minHeight: '36px',
-              paddingLeft: '12px',
-              paddingRight: '12px',
-            }
-      }
+      onClick={onClick}
+      className={`flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left text-sm font-semibold transition ${
+        active
+          ? 'bg-sky-300 text-slate-900 shadow-[0_14px_28px_rgba(125,211,252,0.22)]'
+          : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+      } ${collapsed ? 'justify-center px-2' : ''}`}
+      aria-label={label}
     >
-      {tab}
+      <span className={`${active ? 'text-slate-900' : 'text-sky-300'}`}>{icon}</span>
+      {!collapsed ? <span>{label}</span> : null}
     </button>
   );
 }
@@ -105,9 +101,12 @@ export default function MemberDashboard() {
   const [memberId, setMemberId] = useState('');
   const [loans, setLoans] = useState([]);
   const [transactions, setTransactions] = useState([]);
+  const [savingsEntries, setSavingsEntries] = useState([]);
   const [activeTab, setActiveTab] = useState('overview');
   const [loading, setLoading] = useState(true);
   const [depositAmount, setDepositAmount] = useState('');
+  const [depositSavingsType, setDepositSavingsType] = useState('REGULAR');
+  const [withdrawAmount, setWithdrawAmount] = useState('');
   const [loanAmount, setLoanAmount] = useState('');
   const [loanPurpose, setLoanPurpose] = useState('');
   const [repaymentAmount, setRepaymentAmount] = useState('');
@@ -126,6 +125,8 @@ export default function MemberDashboard() {
   const [notificationBody, setNotificationBody] = useState('');
   const [adminLoanRequests, setAdminLoanRequests] = useState([]);
   const [processingLoanId, setProcessingLoanId] = useState('');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   const fetchWithSession = useCallback(
     async (url, options = {}) => {
@@ -223,6 +224,28 @@ export default function MemberDashboard() {
 
       if (transactionError) throw transactionError;
 
+      let savingsLedger = [];
+      const { data: savingsData, error: savingsError } = await supabase
+        .from('savings')
+        .select('*')
+        .eq('member_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (savingsError) {
+        const message = String(savingsError?.message || '').toLowerCase();
+        const details = String(savingsError?.details || '').toLowerCase();
+        const isMissingSavingsTable =
+          (message.includes('savings') || details.includes('savings')) &&
+          (message.includes('does not exist') ||
+            details.includes('does not exist') ||
+            message.includes('schema cache') ||
+            details.includes('schema cache'));
+
+        if (!isMissingSavingsTable) throw savingsError;
+      } else {
+        savingsLedger = savingsData || [];
+      }
+
       const resolvedRole = normalizeRole(resolvedMember);
       const isAdminRoute = router.pathname === '/admin';
 
@@ -253,6 +276,13 @@ export default function MemberDashboard() {
         (transactionData || []).map((tx) => ({
           ...tx,
           amount: Number(tx.amount || 0),
+        }))
+      );
+      setSavingsEntries(
+        (savingsLedger || []).map((entry) => ({
+          ...entry,
+          amount: Number(entry.amount || 0),
+          locked: Boolean(entry.locked),
         }))
       );
 
@@ -386,15 +416,19 @@ export default function MemberDashboard() {
     try {
       await fetchWithSession('/api/member/deposit', {
         method: 'POST',
-        body: JSON.stringify({ amount }),
+        body: JSON.stringify({ amount, savingsType: depositSavingsType }),
       });
 
       setDepositAmount('');
+      setDepositSavingsType('REGULAR');
       setActiveTab('transactions');
       showToast({
         type: 'success',
         title: 'Deposit successful',
-        description: `${formatKes(amount)} has been added to your savings.`,
+        description:
+          depositSavingsType === 'LONG_TERM'
+            ? `${formatKes(amount)} has been added to your locked savings.`
+            : `${formatKes(amount)} has been added to your regular savings.`,
       });
       await loadDashboard();
     } catch (error) {
@@ -402,6 +436,52 @@ export default function MemberDashboard() {
         type: 'error',
         title: 'Deposit failed',
         description: error.message || 'Deposit failed.',
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleWithdraw = async () => {
+    const amount = Number(withdrawAmount);
+    if (!amount || amount <= 0) {
+      showToast({
+        type: 'error',
+        title: 'Invalid amount',
+        description: 'Enter a valid withdrawal amount.',
+      });
+      return;
+    }
+
+    if (amount > totals.regularSavings) {
+      showToast({
+        type: 'error',
+        title: 'Insufficient regular savings',
+        description: `You can only withdraw up to ${formatKes(totals.regularSavings)} from your flexible savings.`,
+      });
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await fetchWithSession('/api/member/withdraw', {
+        method: 'POST',
+        body: JSON.stringify({ amount }),
+      });
+
+      setWithdrawAmount('');
+      setActiveTab('transactions');
+      showToast({
+        type: 'success',
+        title: 'Withdrawal successful',
+        description: `${formatKes(amount)} has been withdrawn from your regular savings.`,
+      });
+      await loadDashboard();
+    } catch (error) {
+      showToast({
+        type: 'error',
+        title: 'Withdrawal failed',
+        description: error.message || 'Withdrawal failed.',
       });
     } finally {
       setBusy(false);
@@ -754,7 +834,18 @@ export default function MemberDashboard() {
   };
 
   const totals = useMemo(() => {
-    const totalSavings = Number(member?.savings || 0);
+    const hasSavingsLedger = savingsEntries.length > 0;
+    const regularSavings = hasSavingsLedger
+      ? savingsEntries
+          .filter((entry) => String(entry.savings_type || '').toUpperCase() === 'REGULAR')
+          .reduce((sum, entry) => sum + Number(entry.amount || 0), 0)
+      : Number(member?.savings || 0);
+    const lockedSavings = hasSavingsLedger
+      ? savingsEntries
+          .filter((entry) => String(entry.savings_type || '').toUpperCase() === 'LONG_TERM')
+          .reduce((sum, entry) => sum + Number(entry.amount || 0), 0)
+      : 0;
+    const totalSavings = regularSavings + lockedSavings;
     const activeLoans = loans.filter((loan) => {
       const status = String(loan.status || '').toLowerCase();
       return status === 'approved' || status === 'active';
@@ -767,12 +858,14 @@ export default function MemberDashboard() {
 
     return {
       totalSavings,
-      availableFunds: totalSavings,
+      availableFunds: regularSavings,
+      regularSavings,
+      lockedSavings,
       activeLoansCount: activeLoans.length,
       totalLoanBalance,
       totalRepaid,
     };
-  }, [loans, member]);
+  }, [loans, member, savingsEntries]);
 
   useEffect(() => {
     if (!member) {
@@ -797,6 +890,27 @@ export default function MemberDashboard() {
     }
   }, [repayableLoans, selectedLoanId]);
 
+  useEffect(() => {
+    setMobileSidebarOpen(false);
+  }, [activeTab]);
+
+  const navItems = useMemo(
+    () => [
+      { id: 'overview', label: 'Dashboard', icon: <LayoutDashboard className="h-5 w-5" /> },
+      { id: 'profile', label: 'Personal Details', icon: <UserRound className="h-5 w-5" /> },
+      { id: 'savings', label: 'Savings', icon: <PiggyBank className="h-5 w-5" /> },
+      { id: 'loans', label: 'Loans', icon: <HandCoins className="h-5 w-5" /> },
+      { id: 'transactions', label: 'Reports', icon: <BarChart3 className="h-5 w-5" /> },
+      { id: 'chama', label: 'Chama', icon: <Wallet className="h-5 w-5" /> },
+      ...(member?.isAdmin ? [{ id: 'analytics-route', label: 'Analytics', icon: <BarChart3 className="h-5 w-5" />, href: '/admin-analytics' }] : []),
+      ...(member?.isAdmin ? [{ id: 'admin alerts', label: 'Alerts', icon: <BellRing className="h-5 w-5" /> }] : []),
+      ...(member?.isAdmin ? [{ id: 'loan approvals', label: 'Approvals', icon: <HandCoins className="h-5 w-5" /> }] : []),
+    ],
+    [member?.isAdmin]
+  );
+
+  const activeNavItem = navItems.find((item) => item.id === activeTab) || navItems[0];
+
   if (loading) {
     return <div className="min-h-screen bg-[radial-gradient(circle_at_top,#1e3a8a_0%,#102045_42%,#081226_100%)] p-6 text-lg text-white">Loading dashboard...</div>;
   }
@@ -810,66 +924,129 @@ export default function MemberDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top,#1e3a8a_0%,#102045_42%,#081226_100%)] px-4 py-6 text-white sm:px-6 lg:px-8">
-      <div className="mx-auto w-full max-w-5xl">
-        <header className="rounded-[1.9rem] border border-white/10 bg-white/95 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.28)]">
-          <div className="flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
-            <div className="flex-1 text-center md:text-left">
-              <h1 className="text-4xl font-black tracking-tight text-green-600 sm:text-5xl" style={{ color: '#16a34a' }}>Welcome, {member.name.toLowerCase()}</h1>
-              <p className="mt-4 text-xl text-yellow-700 sm:text-2xl" style={{ color: '#ca8a04' }}>{member.email}</p>
-            </div>
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,#1e3a8a_0%,#102045_42%,#081226_100%)] text-white">
+      {mobileSidebarOpen ? (
+        <button
+          type="button"
+          aria-label="Close sidebar overlay"
+          className="fixed inset-0 z-30 bg-slate-950/55 lg:hidden"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      ) : null}
 
-            <div className="flex items-start gap-3 self-start">
-              {member.isAdmin ? (
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-slate-800 bg-slate-900 px-4 py-6 shadow-[0_24px_80px_rgba(2,6,23,0.45)] transition-all duration-300 ${
+          sidebarCollapsed ? 'w-[88px]' : 'w-[250px]'
+        } ${mobileSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}
+      >
+        <div className={`flex items-center ${sidebarCollapsed ? 'justify-center' : 'justify-between'} gap-3`}>
+          {!sidebarCollapsed ? (
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.35em] text-sky-300">Western Sacco Union</p>
+              <h2 className="mt-2 text-xl font-black text-white">Member Portal</h2>
+            </div>
+          ) : (
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-sky-300 text-lg font-black text-slate-900">
+              W
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setSidebarCollapsed((current) => !current)}
+            className="hidden rounded-2xl border border-slate-700 bg-slate-800 p-2 text-slate-200 transition hover:bg-slate-700 lg:inline-flex"
+            aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {sidebarCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setMobileSidebarOpen(false)}
+            className="rounded-2xl border border-slate-700 bg-slate-800 p-2 text-slate-200 transition hover:bg-slate-700 lg:hidden"
+            aria-label="Close sidebar"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <nav className="mt-8 flex-1 space-y-2">
+          {navItems.map((item) => (
+            <SidebarItem
+              key={item.id}
+              active={item.href ? router.pathname === item.href : activeTab === item.id}
+              collapsed={sidebarCollapsed}
+              icon={item.icon}
+              label={item.label}
+              onClick={() => {
+                if (item.href) {
+                  router.push(item.href);
+                  return;
+                }
+                setActiveTab(item.id);
+              }}
+            />
+          ))}
+        </nav>
+
+        <div className="rounded-3xl border border-slate-800 bg-slate-800/80 p-4">
+          {!sidebarCollapsed ? (
+            <>
+              <p className="text-sm font-semibold text-white">{member.name}</p>
+              <p className="mt-1 text-xs text-slate-400">{member.email}</p>
+              <p className="mt-3 text-xs uppercase tracking-[0.25em] text-sky-300">{member.role}</p>
+            </>
+          ) : (
+            <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-2xl bg-sky-300 text-sm font-black text-slate-900">
+              {String(member.name || 'M').charAt(0).toUpperCase()}
+            </div>
+          )}
+        </div>
+      </aside>
+
+      <div className={`transition-all duration-300 lg:ml-[250px] ${sidebarCollapsed ? 'lg:ml-[88px]' : ''}`}>
+        <div className="px-4 py-4 sm:px-6 lg:px-8">
+          <header className="rounded-[1.9rem] border border-white/10 bg-white/95 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.28)] sm:p-6">
+            <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex items-start gap-3">
                 <button
                   type="button"
-                  onClick={() => router.push('/admin-analytics')}
-                  className="rounded-2xl border border-sky-200 bg-sky-300 px-4 py-2 text-base text-slate-900 sm:text-lg"
-                  style={{ backgroundColor: '#7dd3fc', color: '#0f172a', borderColor: '#bae6fd' }}
+                  onClick={() => setMobileSidebarOpen(true)}
+                  className="inline-flex rounded-2xl border border-slate-200 bg-slate-50 p-2 text-slate-900 lg:hidden"
+                  aria-label="Open sidebar"
                 >
-                  Analytics
+                  <Menu className="h-5 w-5" />
                 </button>
-              ) : null}
-              <NotificationBell
-                notifications={notifications}
-                unreadCount={unreadNotifications}
-                isOpen={isNotificationOpen}
-                onToggle={handleToggleNotifications}
-                onMarkRead={handleMarkNotificationRead}
-                onMarkAllRead={handleMarkAllNotificationsRead}
-              />
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="rounded-2xl border border-sky-200 bg-sky-300 px-4 py-2 text-base text-slate-900 sm:text-lg"
-                style={{ backgroundColor: '#7dd3fc', color: '#0f172a', borderColor: '#bae6fd' }}
-              >
-                Logout
-              </button>
-            </div>
-          </div>
-        </header>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.35em] text-sky-500">{activeNavItem?.label || 'Dashboard'}</p>
+                  <h1 className="mt-2 text-3xl font-black tracking-tight text-green-600 sm:text-4xl" style={{ color: '#16a34a' }}>
+                    Welcome, {member.name.toLowerCase()}
+                  </h1>
+                  <p className="mt-2 text-sm text-slate-500 sm:text-base">{member.email}</p>
+                </div>
+              </div>
 
-        <div className="mt-6 space-y-6">
-          <aside className="rounded-[1.9rem] border border-white/10 bg-white/10 p-4 shadow-[0_18px_50px_rgba(0,0,0,0.18)] backdrop-blur">
-            <div className="mb-4 text-center">
-              <p className="text-sm font-semibold uppercase tracking-[0.25em]" style={{ color: '#facc15' }}>Menu</p>
+              <div className="flex flex-wrap items-center gap-3">
+                <NotificationBell
+                  notifications={notifications}
+                  unreadCount={unreadNotifications}
+                  isOpen={isNotificationOpen}
+                  onToggle={handleToggleNotifications}
+                  onMarkRead={handleMarkNotificationRead}
+                  onMarkAllRead={handleMarkAllNotificationsRead}
+                />
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="rounded-2xl border border-slate-200 bg-slate-900 px-4 py-2 text-sm font-semibold text-white sm:text-base"
+                >
+                  Logout
+                </button>
+              </div>
             </div>
-            <nav className="flex flex-wrap items-center justify-center gap-2">
-              {[
-                'overview',
-                'savings',
-                'loans',
-                'transactions',
-                'profile',
-                ...(member.isAdmin ? ['loan approvals', 'admin alerts'] : []),
-              ].map((tab) => (
-                <TabButton key={tab} tab={tab} activeTab={activeTab} onClick={setActiveTab} />
-              ))}
-            </nav>
-          </aside>
+          </header>
 
-          <div>
+          <div className="mt-6">
             {activeTab === 'overview' && (
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 <SummaryCard title="Total Savings" value={formatKes(totals.totalSavings)} subtitle="Available funds" />
@@ -880,30 +1057,81 @@ export default function MemberDashboard() {
 
             {activeTab === 'savings' && (
               <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-                <SectionCard title="Deposit Savings">
-                  <label className="block text-lg font-medium" style={{ color: '#ca8a04' }}>Amount</label>
-                  <StyledInput
-                    type="number"
-                    value={depositAmount}
-                    onChange={(event) => setDepositAmount(event.target.value)}
-                    placeholder="Enter amount"
-                  />
-                  <div className="mt-4 flex justify-center">
-                    <button
-                      type="button"
-                      onClick={handleDeposit}
-                      disabled={busy}
-                      className="rounded-2xl border border-sky-200 bg-sky-300 px-4 py-2 text-lg text-slate-900 disabled:opacity-60"
-                      style={{ backgroundColor: '#7dd3fc', color: '#0f172a', borderColor: '#bae6fd' }}
-                    >
-                      Deposit
-                    </button>
+                <SectionCard title="Regular Savings">
+                  <div className="space-y-6">
+                    <div>
+                      <label className="block text-lg font-medium" style={{ color: '#ca8a04' }}>Deposit Type</label>
+                      <select
+                        value={depositSavingsType}
+                        onChange={(event) => setDepositSavingsType(event.target.value)}
+                        className="mx-auto mt-3 block w-56 max-w-full rounded-full border border-sky-100 bg-white px-4 py-2 text-center text-sm text-slate-900 shadow-[0_10px_24px_rgba(15,23,42,0.08)] outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-100 sm:w-64"
+                      >
+                        <option value="REGULAR">Regular Savings</option>
+                        <option value="LONG_TERM">Locked Savings</option>
+                      </select>
+                      <label className="mt-4 block text-lg font-medium" style={{ color: '#ca8a04' }}>Deposit Amount</label>
+                      <StyledInput
+                        type="number"
+                        value={depositAmount}
+                        onChange={(event) => setDepositAmount(event.target.value)}
+                        placeholder="Enter amount"
+                      />
+                      <div className="mt-4 flex justify-center">
+                        <button
+                          type="button"
+                          onClick={handleDeposit}
+                          disabled={busy}
+                          className="rounded-2xl border border-sky-200 bg-sky-300 px-4 py-2 text-lg text-slate-900 disabled:opacity-60"
+                          style={{ backgroundColor: '#7dd3fc', color: '#0f172a', borderColor: '#bae6fd' }}
+                        >
+                          {depositSavingsType === 'LONG_TERM' ? 'Deposit to Locked Savings' : 'Deposit to Regular Savings'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-slate-200 pt-6">
+                      <label className="block text-lg font-medium" style={{ color: '#ca8a04' }}>Withdraw Amount</label>
+                      <StyledInput
+                        type="number"
+                        value={withdrawAmount}
+                        onChange={(event) => setWithdrawAmount(event.target.value)}
+                        placeholder="Enter amount"
+                      />
+                      <p className="mt-3 text-sm" style={{ color: '#ca8a04' }}>
+                        Available to withdraw: {formatKes(totals.regularSavings)}
+                      </p>
+                      <div className="mt-4 flex justify-center">
+                        <button
+                          type="button"
+                          onClick={handleWithdraw}
+                          disabled={busy}
+                          className="rounded-2xl border border-sky-200 bg-sky-300 px-4 py-2 text-lg text-slate-900 disabled:opacity-60"
+                          style={{ backgroundColor: '#7dd3fc', color: '#0f172a', borderColor: '#bae6fd' }}
+                        >
+                          Withdraw from Regular Savings
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </SectionCard>
 
                 <SectionCard title="Savings Summary">
-                  <p className="text-3xl text-green-700" style={{ color: '#15803d' }}>{formatKes(totals.totalSavings)}</p>
-                  <p className="mt-4 text-lg text-yellow-700" style={{ color: '#ca8a04' }}>Current savings balance</p>
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-3xl text-green-700" style={{ color: '#15803d' }}>{formatKes(totals.totalSavings)}</p>
+                      <p className="mt-2 text-lg text-yellow-700" style={{ color: '#ca8a04' }}>Total savings balance</p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 p-4">
+                      <p className="text-xl font-semibold" style={{ color: '#16a34a' }}>Regular Savings</p>
+                      <p className="mt-2 text-2xl font-bold" style={{ color: '#15803d' }}>{formatKes(totals.regularSavings)}</p>
+                      <p className="mt-2 text-sm" style={{ color: '#ca8a04' }}>Flexible savings you can deposit and withdraw anytime.</p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 p-4">
+                      <p className="text-xl font-semibold" style={{ color: '#16a34a' }}>Locked Savings</p>
+                      <p className="mt-2 text-2xl font-bold" style={{ color: '#15803d' }}>{formatKes(totals.lockedSavings)}</p>
+                      <p className="mt-2 text-sm" style={{ color: '#ca8a04' }}>Chama long-term savings locked for twelve months from the first cycle start.</p>
+                    </div>
+                  </div>
                 </SectionCard>
               </div>
             )}
@@ -1102,6 +1330,27 @@ export default function MemberDashboard() {
                       style={{ backgroundColor: '#7dd3fc', color: '#0f172a', borderColor: '#bae6fd' }}
                     >
                       {profileSaving ? 'Saving...' : 'Save Details'}
+                    </button>
+                  </div>
+                </div>
+              </SectionCard>
+            )}
+
+            {activeTab === 'chama' && (
+              <SectionCard title="Chama">
+                <div className="mx-auto max-w-2xl space-y-4">
+                  <p className="text-base leading-7" style={{ color: '#ca8a04' }}>
+                    Every member is automatically enrolled in the SACCO chama. Each monthly KES 550 contribution is
+                    split into KES 500 for the current payout cycle and KES 50 locked as long-term savings for 12 months.
+                  </p>
+                  <div className="flex justify-center">
+                    <button
+                      type="button"
+                      onClick={() => router.push('/chama')}
+                      className="rounded-2xl border border-sky-200 bg-sky-300 px-5 py-3 text-base font-semibold text-slate-900"
+                      style={{ backgroundColor: '#7dd3fc', color: '#0f172a', borderColor: '#bae6fd' }}
+                    >
+                      Open Chama Dashboard
                     </button>
                   </div>
                 </div>

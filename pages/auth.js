@@ -241,7 +241,7 @@ export default function AuthPage() {
         <div className="grid w-full gap-8 lg:grid-cols-[1fr_420px] lg:items-center">
           <section className="hidden lg:block">
             <div className="max-w-xl">
-              <p className="text-sm font-semibold uppercase tracking-[0.35em] text-yellow-300" style={{ color: '#fde047' }}>Sacco Space</p>
+              <p className="text-sm font-semibold uppercase tracking-[0.35em] text-yellow-300" style={{ color: '#fde047' }}>Western Sacco Union</p>
               <h1 className="mt-5 text-5xl font-black leading-tight text-green-400" style={{ color: '#22c55e' }}>
                 Save confidently.
                 <br />

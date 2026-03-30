@@ -1,0 +1,170 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SavingsType {
+  REGULAR
+  LONG_TERM
+}
+
+enum ChamaStatus {
+  ACTIVE
+  COMPLETED
+  PAUSED
+}
+
+enum ChamaCycleStatus {
+  OPEN
+  PAID_OUT
+  CLOSED
+}
+
+enum ChamaContributionStatus {
+  PAID
+  PENDING
+}
+
+model Member {
+  id                    String               @id @db.Uuid
+  email                 String
+  name                  String
+  savings               Decimal              @default(0) @db.Decimal(12, 2)
+  created_at            DateTime?            @default(now()) @db.Timestamp(6)
+  loans                 Loan[]
+  transactions          Transaction[]
+  savings_entries       Saving[]
+  created_chamas        Chama[]              @relation("ChamaCreator")
+  chama_memberships     ChamaMember[]
+  payout_cycles         ChamaCycle[]         @relation("CyclePayoutMember")
+  chama_contributions   ChamaContribution[]
+
+  @@map("members")
+}
+
+model Loan {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  member_id  String    @db.Uuid
+  amount     Decimal   @db.Decimal(12, 2)
+  purpose    String?
+  status     String?   @default("pending")
+  repaid     Decimal?  @default(0) @db.Decimal(12, 2)
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+  member     Member    @relation(fields: [member_id], references: [id], onDelete: Cascade)
+
+  @@index([member_id])
+  @@map("loans")
+}
+
+model Transaction {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  member_id   String    @db.Uuid
+  type        String
+  amount      Decimal   @db.Decimal(12, 2)
+  description String?
+  created_at  DateTime? @default(now()) @db.Timestamp(6)
+  member      Member    @relation(fields: [member_id], references: [id], onDelete: Cascade)
+
+  @@index([member_id])
+  @@map("transactions")
+}
+
+model Saving {
+  id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  member_id      String             @db.Uuid
+  amount         Decimal            @db.Decimal(12, 2)
+  savings_type   SavingsType        @default(REGULAR)
+  locked         Boolean            @default(false)
+  unlock_date    DateTime?          @db.Timestamp(6)
+  source         String?
+  reference_id   String?            @db.Uuid
+  created_at     DateTime?          @default(now()) @db.Timestamp(6)
+  member         Member             @relation(fields: [member_id], references: [id], onDelete: Cascade)
+  contribution   ChamaContribution? @relation("ContributionSaving")
+
+  @@index([member_id])
+  @@index([reference_id])
+  @@map("savings")
+}
+
+model Chama {
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                String
+  description         String?
+  created_by          String              @db.Uuid
+  contribution_amount Decimal             @default(500) @db.Decimal(12, 2)
+  savings_amount      Decimal             @default(50) @db.Decimal(12, 2)
+  total_amount_due    Decimal             @default(550) @db.Decimal(12, 2)
+  start_date          DateTime            @db.Timestamp(6)
+  status              ChamaStatus         @default(ACTIVE)
+  created_at          DateTime?           @default(now()) @db.Timestamp(6)
+  updated_at          DateTime?           @default(now()) @updatedAt @db.Timestamp(6)
+  creator             Member              @relation("ChamaCreator", fields: [created_by], references: [id], onDelete: Restrict)
+  members             ChamaMember[]
+  cycles              ChamaCycle[]
+  contributions       ChamaContribution[]
+
+  @@map("chamas")
+}
+
+model ChamaMember {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  chama_id     String    @db.Uuid
+  member_id    String    @db.Uuid
+  cycle_number Int
+  joined_at    DateTime? @default(now()) @db.Timestamp(6)
+  chama        Chama     @relation(fields: [chama_id], references: [id], onDelete: Cascade)
+  member       Member    @relation(fields: [member_id], references: [id], onDelete: Cascade)
+
+  @@unique([chama_id, member_id])
+  @@unique([chama_id, cycle_number])
+  @@index([member_id])
+  @@map("chama_members")
+}
+
+model ChamaCycle {
+  id               String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  chama_id         String            @db.Uuid
+  cycle_number     Int
+  cycle_month      DateTime          @db.Date
+  payout_member_id String?           @db.Uuid
+  payout_amount    Decimal           @default(0) @db.Decimal(12, 2)
+  status           ChamaCycleStatus  @default(OPEN)
+  created_at       DateTime?         @default(now()) @db.Timestamp(6)
+  closed_at        DateTime?         @db.Timestamp(6)
+  chama            Chama             @relation(fields: [chama_id], references: [id], onDelete: Cascade)
+  payout_member    Member?           @relation("CyclePayoutMember", fields: [payout_member_id], references: [id], onDelete: SetNull)
+  contributions    ChamaContribution[]
+
+  @@unique([chama_id, cycle_number])
+  @@unique([chama_id, cycle_month])
+  @@index([payout_member_id])
+  @@map("chama_cycles")
+}
+
+model ChamaContribution {
+  id               String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  chama_id         String                  @db.Uuid
+  cycle_id         String                  @db.Uuid
+  member_id        String                  @db.Uuid
+  payment_month    DateTime                @db.Date
+  amount_paid      Decimal                 @db.Decimal(12, 2)
+  chama_amount     Decimal                 @db.Decimal(12, 2)
+  savings_amount   Decimal                 @db.Decimal(12, 2)
+  status           ChamaContributionStatus @default(PAID)
+  paid_at          DateTime?               @default(now()) @db.Timestamp(6)
+  savings_entry_id String?                 @unique @db.Uuid
+  created_at       DateTime?               @default(now()) @db.Timestamp(6)
+  chama            Chama                   @relation(fields: [chama_id], references: [id], onDelete: Cascade)
+  cycle            ChamaCycle              @relation(fields: [cycle_id], references: [id], onDelete: Cascade)
+  member           Member                  @relation(fields: [member_id], references: [id], onDelete: Cascade)
+  savings_entry    Saving?                 @relation("ContributionSaving", fields: [savings_entry_id], references: [id], onDelete: SetNull)
+
+  @@unique([chama_id, cycle_id, member_id])
+  @@index([member_id])
+  @@map("chama_contributions")
+}

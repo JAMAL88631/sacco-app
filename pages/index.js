@@ -12,7 +12,7 @@ export default function Home() {
           <div className="w-full flex justify-between items-center">
             <div className="flex items-center gap-2">
               <span className="text-3xl">💰</span>
-              <div className="text-3xl font-black text-green-600">SACCO Co-op</div>
+              <div className="text-3xl font-black text-green-600">Western Sacco Union</div>
             </div>
             <Link href="/auth" className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-bold transition-colors duration-200 shadow-sm hover:shadow-md">
               Get Started
@@ -94,7 +94,7 @@ export default function Home() {
       <section className="bg-slate-50 py-12 md:py-16 lg:py-24 flex-1">
         <div className="px-4">
           <div className="w-full">
-            <h2 className="text-3xl md:text-4xl lg:text-5xl font-black text-slate-900 text-center mb-8 md:mb-12">Why Choose SACCO Co-op?</h2>
+            <h2 className="text-3xl md:text-4xl lg:text-5xl font-black text-slate-900 text-center mb-8 md:mb-12">Why Choose Western Sacco Union?</h2>
             
             <div className="grid md:grid-cols-3 gap-6 md:gap-8">
               <div className="bg-white p-6 md:p-8 rounded-lg shadow-md border-t-4 border-green-600 hover:shadow-lg transition-shadow duration-300">
@@ -131,7 +131,7 @@ export default function Home() {
       <footer className="bg-slate-900 text-slate-300 py-8 md:py-12">
         <div className="w-full px-4 flex justify-center">
           <div className="w-full max-w-md md:max-w-2xl lg:max-w-4xl text-center">
-            <p className="mb-2 font-semibold">💰 SACCO Co-operative Society</p>
+            <p className="mb-2 font-semibold">💰 Western Sacco Union</p>
             <p className="text-sm text-slate-400">&copy; 2024 All rights reserved. Secure • Fair • Community-Driven</p>
           </div>
         </div>
