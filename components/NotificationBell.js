@@ -34,67 +34,70 @@ export default function NotificationBell({
       </button>
 
       {isOpen ? (
-        <div className="absolute right-0 z-20 mt-3 w-[min(24rem,85vw)] overflow-hidden rounded-[1.5rem] border border-white/10 bg-white text-slate-900 shadow-[0_22px_60px_rgba(2,8,23,0.28)]">
-          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-4">
-            <div>
-              <p className="text-lg font-bold" style={{ color: '#16a34a' }}>Notifications</p>
-              <p className="text-sm" style={{ color: '#ca8a04' }}>{unreadCount} unread</p>
-            </div>
-            <button
-              type="button"
-              onClick={onMarkAllRead}
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-            >
-              <CheckCheck className="h-4 w-4" />
-              Mark all read
-            </button>
-          </div>
+        <>
+          <div className="fixed inset-0 z-20 bg-slate-950/30 sm:hidden" onClick={onToggle} aria-hidden="true" />
 
-          <div className="max-h-96 overflow-y-auto">
-            {notifications.length === 0 ? (
-              <div className="px-4 py-6 text-center text-sm" style={{ color: '#ca8a04' }}>
-                No notifications yet.
+          <div className="fixed inset-x-3 top-24 z-30 max-h-[70vh] overflow-hidden rounded-[1.5rem] border border-white/10 bg-white text-slate-900 shadow-[0_22px_60px_rgba(2,8,23,0.28)] sm:absolute sm:right-0 sm:left-auto sm:top-auto sm:mt-3 sm:w-[min(24rem,85vw)]">
+            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-4">
+              <div>
+                <p className="text-lg font-bold" style={{ color: '#16a34a' }}>Notifications</p>
+                <p className="text-sm" style={{ color: '#ca8a04' }}>{unreadCount} unread</p>
               </div>
-            ) : (
-              notifications.map((notification) => (
-                <div
-                  key={notification.id}
-                  className={`border-b border-slate-100 px-4 py-4 last:border-b-0 ${
-                    notification.isRead ? 'bg-white' : 'bg-sky-50/60'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-base font-bold" style={{ color: '#16a34a' }}>
-                        {notification.title}
-                      </p>
-                      <p className="mt-1 text-sm leading-6 text-slate-700">{notification.body}</p>
-                      <p className="mt-2 text-xs font-medium" style={{ color: '#ca8a04' }}>
-                        {formatNotificationDate(notification.created_at)}
-                      </p>
-                    </div>
+              <button
+                type="button"
+                onClick={onMarkAllRead}
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                <CheckCheck className="h-4 w-4" />
+                Mark all read
+              </button>
+            </div>
 
-                    {!notification.isRead ? (
-                      <button
-                        type="button"
-                        onClick={() => onMarkRead(notification.id)}
-                        className="shrink-0 rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-white"
-                      >
-                        Mark read
-                      </button>
-                    ) : (
-                      <span className="shrink-0 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
-                        Read
-                      </span>
-                    )}
-                  </div>
+            <div className="max-h-[calc(70vh-5rem)] overflow-y-auto sm:max-h-96">
+              {notifications.length === 0 ? (
+                <div className="px-4 py-6 text-center text-sm" style={{ color: '#ca8a04' }}>
+                  No notifications yet.
                 </div>
-              ))
-            )}
+              ) : (
+                notifications.map((notification) => (
+                  <div
+                    key={notification.id}
+                    className={`border-b border-slate-100 px-4 py-4 last:border-b-0 ${
+                      notification.isRead ? 'bg-white' : 'bg-sky-50/60'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-base font-bold" style={{ color: '#16a34a' }}>
+                          {notification.title}
+                        </p>
+                        <p className="mt-1 text-sm leading-6 text-slate-700">{notification.body}</p>
+                        <p className="mt-2 text-xs font-medium" style={{ color: '#ca8a04' }}>
+                          {formatNotificationDate(notification.created_at)}
+                        </p>
+                      </div>
+
+                      {!notification.isRead ? (
+                        <button
+                          type="button"
+                          onClick={() => onMarkRead(notification.id)}
+                          className="shrink-0 rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-white"
+                        >
+                          Mark read
+                        </button>
+                      ) : (
+                        <span className="shrink-0 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                          Read
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
-        </div>
+        </>
       ) : null}
     </div>
   );
 }
-
