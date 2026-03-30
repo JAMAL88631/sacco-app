@@ -115,6 +115,10 @@ function normalizeChamaRecord(record: Partial<ChamaRecord> & { id: string; name:
   } satisfies ChamaRecord;
 }
 
+function asChamaRecordInput(value: unknown) {
+  return value as Partial<ChamaRecord> & { id: string; name: string };
+}
+
 function normalizeChamaMemberRecord(record: {
   id: string;
   chama_id?: string;
@@ -261,7 +265,7 @@ async function fetchChamaByName(serviceClient: ReturnType<typeof createServiceCl
     if (!result.error) {
       const firstMatch = Array.isArray(result.data) ? result.data[0] : null;
       return firstMatch
-        ? normalizeChamaRecord(firstMatch as Partial<ChamaRecord> & { id: string; name: string })
+        ? normalizeChamaRecord(asChamaRecordInput(firstMatch))
         : null;
     }
 
@@ -381,7 +385,7 @@ async function getMandatoryChama(memberId: string) {
       const fallbackCreate = await serviceClient.from('chamas').insert([variant.payload]).select(variant.selectClause).single();
 
       if (fallbackCreate.data) {
-        return normalizeChamaRecord(fallbackCreate.data as Partial<ChamaRecord> & { id: string; name: string });
+        return normalizeChamaRecord(asChamaRecordInput(fallbackCreate.data));
       }
 
       if (fallbackCreate.error && !isDuplicateError(fallbackCreate.error)) {
