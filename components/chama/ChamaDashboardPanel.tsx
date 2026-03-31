@@ -42,10 +42,16 @@ export default function ChamaDashboardPanel({ data, busy, onPay }: ChamaDashboar
     return () => window.clearInterval(intervalId);
   }, []);
 
-  const currentCycleStart = data.currentCycle?.cycleMonth
-    ? new Date(`${data.currentCycle.cycleMonth}T00:00:00`)
-    : null;
-  const nextCycleStart = currentCycleStart ? addDays(currentCycleStart, CHAMA_CYCLE_LENGTH_DAYS) : null;
+  const currentCycleStart = data.currentCycleStartAt
+    ? new Date(data.currentCycleStartAt)
+    : data.currentCycle?.cycleMonth
+      ? new Date(`${data.currentCycle.cycleMonth}T00:00:00`)
+      : null;
+  const nextCycleStart = data.nextCycleStartAt
+    ? new Date(data.nextCycleStartAt)
+    : currentCycleStart
+      ? addDays(currentCycleStart, CHAMA_CYCLE_LENGTH_DAYS)
+      : null;
   const remainingMs = nextCycleStart ? nextCycleStart.getTime() - now.getTime() : null;
   const daysLeft = remainingMs !== null ? (remainingMs > 0 ? Math.ceil(remainingMs / (24 * 60 * 60 * 1000)) : 0) : null;
   const showCycleWarning = daysLeft !== null && daysLeft <= 7 && data.currentUserStatus !== 'paid';
@@ -186,6 +192,7 @@ export default function ChamaDashboardPanel({ data, busy, onPay }: ChamaDashboar
           arrears={data.arrears}
           overdueCycles={data.overdueCycles}
           lateFineTotal={data.lateFineTotal}
+          totalOutstandingAmount={data.totalOutstandingAmount}
           currentUserStatus={data.currentUserStatus}
           busy={busy}
           onPay={onPay}

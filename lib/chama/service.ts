@@ -40,6 +40,29 @@ function addDays(value: string | Date, days: number) {
   return date;
 }
 
+function getDateOnlyStart(value: string | Date) {
+  if (typeof value === 'string') {
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (match) {
+      return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 0, 0, 0, 0);
+    }
+  }
+
+  const date = valueToDate(value);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
+}
+
+function formatDateOnly(value: Date) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getCycleStartDate(start: string | Date, cycleNumber: number) {
+  return addDays(getDateOnlyStart(start), Math.max(0, cycleNumber - 1) * CHAMA_CYCLE_LENGTH_DAYS);
+}
+
 function differenceInCycleWindows(start: string | Date, end: Date) {
   const startDate = valueToDate(start);
   const endDate = valueToDate(end);
@@ -492,7 +515,8 @@ async function getMembersByIds(memberIds: string[]) {
 async function ensureCurrentCycle(chama: ChamaRecord, chamaMembers: ChamaMemberRecord[]) {
   const serviceClient = createServiceClient();
   const currentCycleNumber = Math.max(1, differenceInCycleWindows(chama.start_date, new Date()) + 1);
-  const cycleMonth = addDays(chama.start_date, (currentCycleNumber - 1) * CHAMA_CYCLE_LENGTH_DAYS).toISOString().slice(0, 10);
+  const currentCycleStartDate = getCycleStartDate(chama.start_date, currentCycleNumber);
+  const cycleMonth = formatDateOnly(currentCycleStartDate);
   const payoutMember = chamaMembers.find((member) => member.cycle_number === currentCycleNumber) || null;
 
   const { data: existingCycle, error: existingCycleError } = await serviceClient
@@ -637,6 +661,8 @@ export async function getChamaDashboard({
   const memberProfiles = await getMembersByIds(chamaMembers.map((item) => item.member_id));
   const profileMap = new Map(memberProfiles.map((profile) => [profile.id, profile]));
   const { currentCycleNumber, cycle, payoutMember } = await ensureCurrentCycle(chama, chamaMembers);
+  const currentCycleStartDate = getCycleStartDate(chama.start_date, currentCycleNumber);
+  const nextCycleStartDate = addDays(currentCycleStartDate, CHAMA_CYCLE_LENGTH_DAYS);
   const contributions = await getContributionsForChama(chamaId);
   const cycleContributions = contributions.filter((item) => item.cycle_id === cycle?.id);
   const dueAmount = parseMoney(chama.total_amount_due) || CHAMA_MONTHLY_TOTAL;
@@ -663,7 +689,9 @@ export async function getChamaDashboard({
     }
     return cycleNumber < currentCycleNumber;
   }).length;
+  const overdueCycleAmount = arrearsCycles * CHAMA_MONTHLY_TOTAL;
   const lateFineTotal = arrearsCycles * CHAMA_LATE_FINE_AMOUNT;
+  const totalArrears = currentCycleRemainingAmount + overdueCycleAmount + lateFineTotal;
 
   const members: ChamaDashboardMember[] = chamaMembers.map((item) => {
     const profile = profileMap.get(item.member_id);
@@ -686,12 +714,15 @@ export async function getChamaDashboard({
       status: chama.status,
     },
     currentCycleNumber,
+    currentCycleStartAt: currentCycleStartDate.toISOString(),
+    nextCycleStartAt: nextCycleStartDate.toISOString(),
     amountDue: dueAmount,
     currentCyclePaidAmount,
     currentCycleRemainingAmount,
-    arrears: arrearsCycles * CHAMA_MONTHLY_TOTAL + lateFineTotal,
+    arrears: totalArrears,
     overdueCycles: arrearsCycles,
     lateFineTotal,
+    totalOutstandingAmount: totalArrears,
     assignedCycleNumber: membership.cycle_number,
     payoutRecipient: payoutMember
       ? {

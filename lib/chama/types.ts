@@ -62,12 +62,15 @@ export interface ChamaDashboardPayload {
     status: ChamaStatus;
   };
   currentCycleNumber: number;
+  currentCycleStartAt: string | null;
+  nextCycleStartAt: string | null;
   amountDue: number;
   currentCyclePaidAmount: number;
   currentCycleRemainingAmount: number;
   arrears: number;
   overdueCycles: number;
   lateFineTotal: number;
+  totalOutstandingAmount: number;
   assignedCycleNumber: number;
   payoutRecipient: {
     memberId: string;

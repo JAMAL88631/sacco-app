@@ -8,6 +8,7 @@ interface ChamaContributionCardProps {
   arrears: number;
   overdueCycles: number;
   lateFineTotal: number;
+  totalOutstandingAmount: number;
   currentUserStatus: 'paid' | 'pending';
   busy: boolean;
   onPay: (amount: number) => void;
@@ -20,6 +21,7 @@ export default function ChamaContributionCard({
   arrears,
   overdueCycles,
   lateFineTotal,
+  totalOutstandingAmount,
   currentUserStatus,
   busy,
   onPay,
@@ -50,10 +52,18 @@ export default function ChamaContributionCard({
         Arrears: KES {Number(arrears || 0).toLocaleString()}
       </p>
       {overdueCycles > 0 ? (
-        <p className="mt-2 text-sm" style={{ color: '#b45309' }}>
-          Includes KES {Number(lateFineTotal || 0).toLocaleString()} in fines for {overdueCycles} overdue cycle
-          {overdueCycles === 1 ? '' : 's'} at KES 50 each.
-        </p>
+        <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-left">
+          <p className="text-sm font-semibold text-amber-900">
+            Late payment penalty applied
+          </p>
+          <p className="mt-1 text-sm text-amber-800">
+            KES {Number(lateFineTotal || 0).toLocaleString()} added for {overdueCycles} overdue cycle
+            {overdueCycles === 1 ? '' : 's'} at KES 50 each.
+          </p>
+          <p className="mt-1 text-sm font-semibold text-amber-900">
+            Total outstanding now: KES {Number(totalOutstandingAmount || 0).toLocaleString()}
+          </p>
+        </div>
       ) : null}
       {currentUserStatus !== 'paid' ? (
         <div className="mt-5">
