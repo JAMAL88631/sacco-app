@@ -208,11 +208,10 @@ export default function MemberDashboard() {
         throw memberError;
       }
 
-      const { data: loanData, error: loanError } = await supabase
-        .from('loans')
-        .select('*')
-        .eq('member_id', user.id)
-        .order('created_at', { ascending: false });
+      const loanResponse = await fetchWithSession('/api/member/loans');
+const loanData = Array.isArray(loanResponse?.loans)
+  ? loanResponse.loans
+  : [];
 
       if (loanError) throw loanError;
 
